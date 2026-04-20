@@ -1,0 +1,684 @@
+수민이
+choisumin5138
+온라인
+
+수민이 — 어제 오후 8:07
+퀴즈공부 할게
+수민이 — 어제 오후 8:27
+퀴즈 업데이트 함
+https://smchio99-sudo.github.io/dcpc_quiz/
+어려운 문제 업데이트함
+조현우 — 오후 9:41
+이걸로 해라
+카톡 껐ㄷ가
+수민이 — 오후 9:43
+이미지
+이미지
+조현우 — 오후 9:46
+ox 를 어디까지하는거야 ㅋㅋ
+수민이 — 오후 9:46
+충격사실 : 이거는 전부 4장에서만 나온것이다
+수민이 — 오후 10:57
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FIGHTERS ONLINE</title>
+
+index.html
+17KB
+﻿
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FIGHTERS ONLINE</title>
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Noto+Sans+KR:wght@400;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0a0a0f;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    font-family: 'Black Han Sans', sans-serif;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  #screen {
+    position: relative;
+    width: 800px;
+    height: 480px;
+    overflow: hidden;
+  }
+
+  /* ── LOBBY ── */
+  #lobby {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    background: radial-gradient(ellipse at center, #1a0a2e 0%, #0a0a0f 70%);
+    z-index: 10;
+  }
+
+  .game-title {
+    font-size: 56px;
+    letter-spacing: 6px;
+    color: #fff;
+    text-shadow: 0 0 30px #ff4400, 0 0 60px #ff220088;
+    margin-bottom: 8px;
+    animation: flicker 3s infinite;
+  }
+  .game-sub {
+    font-size: 14px;
+    letter-spacing: 8px;
+    color: #ff6633;
+    margin-bottom: 50px;
+    font-family: 'Noto Sans KR', sans-serif;
+  }
+
+  @keyframes flicker {
+    0%,95%,100% { opacity: 1; }
+    96% { opacity: 0.7; }
+    97% { opacity: 1; }
+    98% { opacity: 0.6; }
+  }
+
+  .btn {
+    padding: 14px 48px;
+    font-family: 'Black Han Sans', sans-serif;
+    font-size: 20px;
+    letter-spacing: 4px;
+    color: #fff;
+    background: transparent;
+    border: 2px solid #ff4400;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+    overflow: hidden;
+  }
+  .btn::before {
+    content: '';
+    position: absolute; inset: 0;
+    background: #ff4400;
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 0.2s;
+    z-index: -1;
+  }
+  .btn:hover::before { transform: scaleX(1); }
+  .btn:hover { color: #fff; text-shadow: 0 0 10px #fff; }
+  .btn:active { transform: scale(0.97); }
+
+  #statusMsg {
+    margin-top: 20px;
+    font-size: 14px;
+    color: #aaa;
+    letter-spacing: 2px;
+    font-family: 'Noto Sans KR', sans-serif;
+    height: 24px;
+    animation: pulse 1.2s infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  .controls-hint {
+    position: absolute;
+    bottom: 30px;
+    font-family: 'Noto Sans KR', sans-serif;
+    font-size: 12px;
+    color: #555;
+    text-align: center;
+    letter-spacing: 1px;
+  }
+  .key { color: #ff6633; }
+
+  /* ── GAME CANVAS ── */
+  #gameArea {
+    position: absolute; inset: 0;
+    display: none;
+  }
+
+  canvas { display: block; }
+
+  /* ── HUD ── */
+  #hud {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 60px;
+    display: flex;
+    align-items: center;
+    padding: 10px 16px;
+    gap: 10px;
+    background: linear-gradient(to bottom, rgba(0,0,0,0.9), rgba(0,0,0,0.4));
+    pointer-events: none;
+  }
+
+  .hp-wrap {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .hp-wrap.right { align-items: flex-end; }
+
+  .fighter-name {
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: #ff6633;
+  }
+
+  .hp-bar-bg {
+    width: 100%;
+    height: 16px;
+    background: #1a0a00;
+    border: 1px solid #ff440044;
+    overflow: hidden;
+  }
+  .hp-bar {
+    height: 100%;
+    background: linear-gradient(to right, #ff2200, #ffaa00);
+    transition: width 0.1s;
+    transform-origin: left;
+  }
+  .hp-wrap.right .hp-bar-bg { direction: rtl; }
+  .hp-wrap.right .hp-bar { transform-origin: right; }
+
+  .timer-box {
+    width: 64px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+  .timer-val {
+    font-size: 32px;
+    color: #fff;
+    text-shadow: 0 0 10px #ff4400;
+    line-height: 1;
+  }
+  .round-txt {
+    font-size: 9px;
+    color: #888;
+    letter-spacing: 2px;
+  }
+
+  /* ── OVERLAY ── */
+  #overlay {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.75);
+    z-index: 5;
+    display: none;
+  }
+  .overlay-title {
+    font-size: 52px;
+    letter-spacing: 6px;
+    color: #fff;
+    text-shadow: 0 0 20px #ff4400;
+    animation: zoomIn 0.4s ease-out;
+  }
+  .overlay-sub {
+    font-size: 16px;
+    color: #ff6633;
+    margin-top: 8px;
+    font-family: 'Noto Sans KR', sans-serif;
+    animation: zoomIn 0.4s ease-out 0.15s both;
+  }
+  @keyframes zoomIn {
+    from { transform: scale(0.5); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+  }
+
+  #mobileHint {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    display: none;
+  }
+
+  .scanline {
+    position: absolute; inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(to bottom, transparent 0, transparent 3px, rgba(0,0,0,0.07) 3px, rgba(0,0,0,0.07) 4px);
+    z-index: 99;
+  }
+
+  #roomInfo {
+    position: absolute;
+    bottom: 60px;
+    font-family: 'Noto Sans KR', sans-serif;
+    font-size: 11px;
+    color: #444;
+    letter-spacing: 1px;
+  }
+</style>
+</head>
+<body>
+
+<div id="screen">
+  <div class="scanline"></div>
+
+  <!-- LOBBY -->
+  <div id="lobby">
+    <div class="game-title">FIGHTERS</div>
+    <div class="game-sub">ONLINE BATTLE</div>
+    <button class="btn" id="matchBtn" onclick="findMatch()">MATCH START</button>
+    <div id="statusMsg"></div>
+    <div class="controls-hint">
+      <span class="key">← →</span> 이동 &nbsp;|&nbsp;
+      <span class="key">↑</span> 점프 &nbsp;|&nbsp;
+      <span class="key">Q</span> 주먹 &nbsp;|&nbsp;
+      <span class="key">A</span> 발차기
+    </div>
+    <div id="roomInfo"></div>
+  </div>
+
+  <!-- GAME -->
+  <div id="gameArea">
+    <canvas id="canvas" width="800" height="480"></canvas>
+    <div id="hud">
+      <div class="hp-wrap" id="hp0wrap">
+        <div class="fighter-name">KAZE</div>
+        <div class="hp-bar-bg"><div class="hp-bar" id="hp0"></div></div>
+      </div>
+      <div class="timer-box">
+        <div class="round-txt">TIME</div>
+        <div class="timer-val" id="timerDisplay">60</div>
+      </div>
+      <div class="hp-wrap right" id="hp1wrap">
+        <div class="fighter-name">RION</div>
+        <div class="hp-bar-bg"><div class="hp-bar" id="hp1"></div></div>
+      </div>
+    </div>
+    <div id="overlay">
+      <div class="overlay-title" id="overlayTitle">KO!</div>
+      <div class="overlay-sub" id="overlaySub"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const socket = io();
+let playerIndex = -1;
+let roomId = null;
+let gameState = null;
+let lastInput = {};
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+const keys = {};
+document.addEventListener('keydown', e => {
+  keys[e.key] = true;
+  e.preventDefault();
+});
+document.addEventListener('keyup', e => {
+  keys[e.key] = false;
+});
+
+function getInput() {
+  return {
+    left:  keys['ArrowLeft']  || keys['a'],
+    right: keys['ArrowRight'] || keys['d'],
+    jump:  keys['ArrowUp']    || keys['w'],
+    punch: keys['q'] || keys['Q'],
+    kick:  keys['a'] || keys['A']
+  };
+}
+
+function findMatch() {
+  document.getElementById('matchBtn').disabled = true;
+  document.getElementById('statusMsg').textContent = '상대방을 찾는 중...';
+  socket.emit('findMatch');
+}
+
+socket.on('waiting', () => {
+  document.getElementById('statusMsg').textContent = '상대방 대기 중... ⏳';
+});
+
+socket.on('matchFound', ({ roomId: rid, playerIndex: idx }) => {
+  roomId = rid;
+  playerIndex = idx;
+  document.getElementById('lobby').style.display = 'none';
+  document.getElementById('gameArea').style.display = 'block';
+  startGame();
+});
+
+socket.on('gameState', (state) => {
+  gameState = state;
+  renderHUD(state);
+  if (state.gameOver) showGameOver(state);
+});
+
+socket.on('opponentLeft', () => {
+  showOverlay('OPPONENT LEFT', '상대방이 접속을 끊었습니다');
+});
+
+// ── GAME LOOP ──
+function startGame() {
+  setInterval(() => {
+    if (!roomId) return;
+    const input = getInput();
+    socket.emit('playerInput', { roomId, input });
+  }, 1000 / 60);
+
+  requestAnimationFrame(drawLoop);
+}
+
+function drawLoop() {
+  if (gameState) draw(gameState);
+  requestAnimationFrame(drawLoop);
+}
+
+// ── RENDERING ──
+const COLORS = {
+  sky: ['#1a0a2e', '#0d1a3a', '#0a2a1a'],
+  ground: '#1a0f00',
+  groundLine: '#ff440033',
+  p0: { body: '#e8c87a', suit: '#2244aa', hair: '#1a0a0a', accent: '#ff4400' },
+  p1: { body: '#e8c87a', suit: '#aa2244', hair: '#1a0a0a', accent: '#4400ff' }
+};
+
+function draw(state) {
+  const W = 800, H = 480;
+  const GROUND = 300;
+
+  // BG gradient
+  const grad = ctx.createLinearGradient(0, 0, 0, GROUND);
+  grad.addColorStop(0, '#0d0520');
+  grad.addColorStop(1, '#1a1040');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, GROUND);
+
+  // BG elements - torii gate style
+  drawBackground(ctx);
+
+  // Ground
+  const gGrad = ctx.createLinearGradient(0, GROUND, 0, H);
+  gGrad.addColorStop(0, '#2a1808');
+  gGrad.addColorStop(1, '#0a0500');
+  ctx.fillStyle = gGrad;
+  ctx.fillRect(0, GROUND, W, H - GROUND);
+
+  // Ground line
+  ctx.strokeStyle = '#ff440066';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, GROUND);
+  ctx.lineTo(W, GROUND);
+  ctx.stroke();
+
+  // Players
+  state.players.forEach((p, i) => {
+    drawPlayer(ctx, p, i, GROUND);
+  });
+
+  // Attack effects
+  state.players.forEach((p, i) => {
+    if (p.attackTimer > 12) drawAttackEffect(ctx, p, i, GROUND);
+    if (p.hitTimer > 10) drawHitEffect(ctx, p, GROUND);
+  });
+}
+
+function drawBackground(ctx) {
+  // Moon
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(400, 80, 50, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffeecc22';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(400, 80, 38, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffeecc44';
+  ctx.fill();
+  ctx.restore();
+
+  // Torii gate
+  ctx.save();
+  ctx.strokeStyle = '#cc220088';
+  ctx.lineWidth = 8;
+  ctx.strokeRect(280, 160, 240, 140);
+  ctx.lineWidth = 14;
+  ctx.beginPath();
+  ctx.moveTo(260, 160);
+  ctx.lineTo(540, 160);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(270, 175);
+  ctx.lineTo(530, 175);
+  ctx.stroke();
+  ctx.restore();
+
+  // Stars
+  ctx.fillStyle = '#ffffff88';
+  for (let i = 0; i < 40; i++) {
+    const sx = ((i * 73 + 17) % 780) + 10;
+    const sy = ((i * 41 + 7) % 120) + 10;
+    ctx.fillRect(sx, sy, 1.5, 1.5);
+  }
+}
+
+function drawPlayer(ctx, p, idx, GROUND) {
+  const c = idx === 0 ? COLORS.p0 : COLORS.p1;
+  const x = p.x, y = GROUND - p.y + GROUND;
+  const dir = p.facing;
+  const isHit = p.hitTimer > 0;
+  const isAttack = p.attackTimer > 0;
+
+  ctx.save();
+  ctx.translate(x, y);
+  if (dir < 0) ctx.scale(-1, 1);
+
+  if (isHit) {
+    ctx.globalAlpha = 0.7 + Math.sin(p.hitTimer * 0.5) * 0.3;
+  }
+
+  const bounce = p.state === 'walk' ? Math.sin(Date.now() * 0.015) * 3 : 0;
+  const jumpOff = p.y < GROUND ? (GROUND - p.y) : 0;
+
+  // Shadow
+  if (p.y >= GROUND) {
+    ctx.beginPath();
+    ctx.ellipse(0, 2, 20, 5, 0, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.fill();
+  }
+
+  const by = bounce - jumpOff * 0.1;
+
+  // Legs
+  if (p.state === 'kick' && isAttack) {
+    // Kick leg extended
+    ctx.fillStyle = c.suit;
+    ctx.fillRect(-8, -40 + by, 16, 22);
+    ctx.fillStyle = c.suit;
+    ctx.save();
+    ctx.translate(0, -18 + by);
+    ctx.rotate(0.4);
+    ctx.fillRect(0, -8, 40, 12);
+    ctx.restore();
+    // Standing leg
+    ctx.fillRect(-8, -18 + by, 14, 22);
+  } else if (p.state === 'jump') {
+    ctx.fillStyle = c.suit;
+    ctx.save();
+    ctx.translate(-8, -38 + by);
+    ctx.rotate(-0.3);
+    ctx.fillRect(0, 0, 12, 22);
+    ctx.restore();
+    ctx.save();
+    ctx.translate(4, -38 + by);
+    ctx.rotate(0.3);
+    ctx.fillRect(0, 0, 12, 22);
+    ctx.restore();
+  } else {
+    ctx.fillStyle = c.suit;
+    ctx.fillRect(-16, -38 + by, 14, 22);
+    ctx.fillRect(2, -38 + by, 14, 22);
+  }
+
+  // Body
+  ctx.fillStyle = c.suit;
+  ctx.fillRect(-14, -70 + by, 28, 34);
+
+  // Punch arm
+  if (p.state === 'punch' && isAttack) {
+    ctx.fillStyle = c.suit;
+    ctx.fillRect(-16, -68 + by, 60, 12);
+    ctx.fillStyle = c.body;
+    ctx.fillRect(44, -70 + by, 14, 14);
+  } else {
+    ctx.fillStyle = c.suit;
+    ctx.fillRect(-22, -68 + by, 10, 24);
+    ctx.fillRect(12, -68 + by, 10, 24);
+  }
+
+  // Head
+  ctx.fillStyle = c.body;
+  ctx.beginPath();
+  ctx.ellipse(0, -82 + by, 14, 16, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Hair
+  ctx.fillStyle = c.hair;
+  ctx.beginPath();
+  ctx.ellipse(0, -93 + by, 14, 8, 0, 0, Math.PI);
+  ctx.fill();
+  if (idx === 1) {
+    ctx.beginPath();
+    ctx.moveTo(-14, -90 + by);
+    ctx.quadraticCurveTo(-24, -80 + by, -20, -68 + by);
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = c.hair;
+    ctx.stroke();
+  }
+
+  // Eyes
+  ctx.fillStyle = '#111';
+  ctx.beginPath();
+  ctx.ellipse(6, -83 + by, 3, 3.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  if (isHit) {
+    ctx.strokeStyle = '#ff0000';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(2, -87 + by); ctx.lineTo(10, -81 + by);
+    ctx.moveTo(10, -87 + by); ctx.lineTo(2, -81 + by);
+    ctx.stroke();
+  }
+
+  // Belt/accent
+  ctx.fillStyle = c.accent;
+  ctx.fillRect(-14, -52 + by, 28, 5);
+
+  ctx.restore();
+
+  // HP number
+  ctx.fillStyle = '#ffffff88';
+  ctx.font = '10px "Noto Sans KR"';
+  ctx.textAlign = 'center';
+  ctx.fillText(`${Math.ceil(p.hp)}`, x, GROUND - (p.y < GROUND ? p.y : 0) - 110);
+}
+
+function drawAttackEffect(ctx, p, idx, GROUND) {
+  const x = p.x + p.facing * 70;
+  const y = GROUND - (p.y < GROUND ? p.y : 0) - 60;
+
+  ctx.save();
+  ctx.globalAlpha = p.attackTimer / 20;
+
+  if (p.attackType === 'punch') {
+    const colors = ['#ffff00', '#ff8800', '#ff4400'];
+    for (let i = 0; i < 3; i++) {
+      ctx.beginPath();
+      ctx.arc(x, y, (3 - i) * 12, 0, Math.PI * 2);
+      ctx.strokeStyle = colors[i];
+      ctx.lineWidth = 3 - i;
+      ctx.stroke();
+    }
+  } else {
+    // Kick arc
+    for (let a = -0.5; a <= 0.5; a += 0.1) {
+      ctx.beginPath();
+      ctx.arc(p.x, GROUND - (p.y < GROUND ? p.y : 0) - 30, 60, -0.3 + a, 0.7 + a);
+      ctx.strokeStyle = `hsl(${200 + a * 100}, 100%, 60%)`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+function drawHitEffect(ctx, p, GROUND) {
+  const x = p.x;
+  const y = GROUND - (p.y < GROUND ? p.y : 0) - 60;
+  ctx.save();
+  ctx.globalAlpha = p.hitTimer / 15;
+  for (let i = 0; i < 6; i++) {
+    const angle = (i / 6) * Math.PI * 2;
+    const r = (15 - p.hitTimer) * 3;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + Math.cos(angle) * r, y + Math.sin(angle) * r);
+    ctx.strokeStyle = '#ffdd00';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function renderHUD(state) {
+  document.getElementById('hp0').style.width = state.players[0].hp + '%';
+  document.getElementById('hp1').style.width = state.players[1].hp + '%';
+  document.getElementById('timerDisplay').textContent = state.timer;
+
+  // HP color
+  const hpEl0 = document.getElementById('hp0');
+  const hpEl1 = document.getElementById('hp1');
+  [{ el: hpEl0, hp: state.players[0].hp }, { el: hpEl1, hp: state.players[1].hp }].forEach(({ el, hp }) => {
+    if (hp < 25) el.style.background = 'linear-gradient(to right, #ff0000, #ff4400)';
+    else if (hp < 50) el.style.background = 'linear-gradient(to right, #ff6600, #ffaa00)';
+    else el.style.background = 'linear-gradient(to right, #ff2200, #ffaa00)';
+  });
+}
+
+function showGameOver(state) {
+  const overlay = document.getElementById('overlay');
+  const title = document.getElementById('overlayTitle');
+  const sub = document.getElementById('overlaySub');
+
+  overlay.style.display = 'flex';
+
+  if (state.winner === -1) {
+    title.textContent = 'DRAW';
+    sub.textContent = '무승부!';
+  } else if (state.winner === playerIndex) {
+    title.textContent = 'YOU WIN!';
+    title.style.color = '#ffdd00';
+    sub.textContent = '승리! 상대를 쓰러뜨렸습니다';
+  } else {
+    title.textContent = 'YOU LOSE';
+    title.style.color = '#ff2200';
+    sub.textContent = '패배... 다시 도전하세요';
+  }
+
+  setTimeout(() => {
+    sub.innerHTML += '<br><br><button class="btn" onclick="location.reload()" style="font-size:14px; padding:10px 30px;">REMATCH</button>';
+  }, 1500);
+}
+
+function showOverlay(t, s) {
+  document.getElementById('overlay').style.display = 'flex';
+  document.getElementById('overlayTitle').textContent = t;
+  document.getElementById('overlaySub').textContent = s;
+}
+</script>
+</body>
+</html>
+index.html
+17KB
