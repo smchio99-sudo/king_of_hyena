@@ -120,562 +120,965 @@ body{background:#000;display:flex;align-items:center;justify-content:center;min-
     </div>
   </div>
 </div>
+
 <script>
-const socket=io();
-let playerIndex=-1,roomId=null,gameState=null;
-let gameOverShown=false,gameStarted=false;
-const canvas=document.getElementById('canvas');
-const ctx=canvas.getContext('2d');
-const keys={};
-document.addEventListener('keydown',e=>{keys[e.key]=true;e.preventDefault();});
-document.addEventListener('keyup',e=>{keys[e.key]=false;});
-function getInput(){return{left:!!keys['ArrowLeft'],right:!!keys['ArrowRight'],jump:!!keys['ArrowUp'],punch:!!(keys['q']||keys['Q']),kick:!!(keys['a']||keys['A'])};}
-function findMatch(){document.getElementById('matchBtn').disabled=true;const s=document.getElementById('statusMsg');s.textContent='상대방을 찾는 중...';s.className='pulse';socket.emit('findMatch');}
-socket.on('waiting',()=>{const s=document.getElementById('statusMsg');s.textContent='대기 중... 상대방을 기다리는 중 ⏳';s.className='pulse';});
-socket.on('matchFound',({roomId:rid,playerIndex:idx})=>{roomId=rid;playerIndex=idx;document.getElementById('lobby').style.display='none';document.getElementById('gameArea').style.display='block';startCountdown();requestAnimationFrame(drawLoop);});
-socket.on('gameState',state=>{gameState=state;if(gameStarted){updateHUD(state);if(state.gameOver&&!gameOverShown){gameOverShown=true;setTimeout(()=>showOverlay(state),700);}}});
-socket.on('opponentLeft',()=>{document.getElementById('ovr').className='ovr draw';document.getElementById('ovr').textContent='DISCONNECTED';document.getElementById('ovs').textContent='상대방이 접속을 끊었습니다';document.getElementById('overlay').style.display='flex';});
+const socket = io();
 
-function startCountdown(){
-  const el=document.getElementById('countdown');el.style.display='flex';
-  const steps=['3','2','1','FIGHT!'];let i=0;
-  function next(){el.innerHTML='';if(i>=steps.length){el.style.display='none';gameStarted=true;startLoop();return;}
-    const isFight=steps[i]==='FIGHT!';const d=document.createElement('div');d.className=isFight?'cdf':'cdn';d.textContent=steps[i];el.appendChild(d);i++;setTimeout(next,isFight?950:850);}
-  next();
+let playerIndex = -1;
+let roomId = null;
+let gameState = null;
+let gameOverShown = false;
+let gameStarted = false;
+let renderLoopStarted = false;
+let inputLoopId = null;
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+const W = canvas.width;
+const H = canvas.height;
+const GY = 338;
+const TAU = Math.PI * 2;
+
+const keys = {};
+const trackedKeys = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'q', 'Q', 'a', 'A', ' ']);
+
+document.addEventListener('keydown', e => {
+  if (trackedKeys.has(e.key)) e.preventDefault();
+  keys[e.key] = true;
+});
+document.addEventListener('keyup', e => {
+  if (trackedKeys.has(e.key)) e.preventDefault();
+  keys[e.key] = false;
+});
+
+function getInput() {
+  return {
+    left: !!keys['ArrowLeft'],
+    right: !!keys['ArrowRight'],
+    jump: !!keys['ArrowUp'],
+    punch: !!(keys['q'] || keys['Q']),
+    kick: !!(keys['a'] || keys['A'])
+  };
 }
-function startLoop(){setInterval(()=>{if(roomId&&gameStarted)socket.emit('playerInput',{roomId,input:getInput()});},1000/60);}
-function drawLoop(){if(gameState)draw(gameState);requestAnimationFrame(drawLoop);}
 
-function updateHUD(s){
-  const h0=Math.max(0,Math.ceil(s.players[0].hp)),h1=Math.max(0,Math.ceil(s.players[1].hp));
-  document.getElementById('hb0').style.width=h0+'%';document.getElementById('hb1').style.width=h1+'%';
-  document.getElementById('hn0').textContent=h0;document.getElementById('hn1').textContent=h1;
-  const t=s.timer,tn=document.getElementById('tnum');tn.textContent=t;tn.className='tnum'+(t<=10?' turgent':'');
-  document.getElementById('hc0').className='hcol'+(h0<25?' hdanger':'');
-  document.getElementById('hc1').className='hcol r'+(h1<25?' hdanger':'');
-}
-function showOverlay(s){
-  const ov=document.getElementById('overlay'),r=document.getElementById('ovr'),sb=document.getElementById('ovs');
-  ov.style.display='flex';
-  if(s.winner===-1){r.className='ovr draw';r.textContent='DRAW';sb.textContent='무승부!';}
-  else if(s.winner===playerIndex){r.className='ovr win';r.textContent='YOU WIN!';sb.textContent='승리! 상대를 쓰러뜨렸습니다';}
-  else{r.className='ovr lose';r.textContent='YOU LOSE';sb.textContent='패배... 다시 도전하세요';}
-}
+function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function easeOutQuad(t) { return 1 - (1 - t) * (1 - t); }
 
-/* ═══════════════════════════════════════
-   RENDERING
-═══════════════════════════════════════ */
-const GY=320, W=800, H=480;
-const T=Date.now;
-
-/* Colour palettes per player */
-const SKIN='#e8c580';
-const P=[
-  /* KAZE - blue fighter */
+const palettes = [
   {
-    skin:SKIN, skinDark:'#c8a560',
-    gi:'#1a3a8a', giDark:'#0f2260', giLight:'#2a4aaa',
-    belt:'#ffffff', pants:'#0d1f55', pantsDark:'#08143a',
-    hair:'#0a0505', eye:'#112233', acc:'#ff4400',
-    energyCol:'#44aaff', energyCol2:'#0066ff'
+    skin: '#e4be7d', skin2: '#c89458',
+    hair: '#111419', eye: '#6ec3ff',
+    main: '#2464ff', mainDark: '#10359b', mainLight: '#6ca4ff',
+    trim: '#f2f6ff', glove: '#dfe9ff',
+    boots: '#0f1d3d', belt: '#f5f7ff',
+    aura: 'rgba(69,174,255,.9)', aura2: 'rgba(138,224,255,.35)'
   },
-  /* RION - red fighter */
   {
-    skin:SKIN, skinDark:'#c8a560',
-    gi:'#8a1a2a', giDark:'#601018', giLight:'#aa2a3a',
-    belt:'#000000', pants:'#551020', pantsDark:'#380a16',
-    hair:'#0a0505', eye:'#332211', acc:'#aa00ff',
-    energyCol:'#ff44aa', energyCol2:'#ff0066'
+    skin: '#deb67b', skin2: '#be8652',
+    hair: '#180e12', eye: '#ff84a4',
+    main: '#d3245d', mainDark: '#821135', mainLight: '#ff6996',
+    trim: '#1a0d14', glove: '#ffd6e4',
+    boots: '#34101a', belt: '#12070a',
+    aura: 'rgba(255,75,158,.92)', aura2: 'rgba(255,157,214,.35)'
   }
 ];
 
-function draw(s){
-  drawBG();
-  /* draw back-player first (further from cam = lower z) */
-  const order = s.players[0].x < s.players[1].x ? [0,1] : [1,0];
-  order.forEach(i=>drawPlayer(s.players[i],i));
-  /* FX on top */
-  s.players.forEach((p,i)=>{
-    if(p.attackTimer>0) drawAttackFX(p,i);
-    if(p.hitTimer>8)    drawHitFX(p);
-  });
+const renderFx = {
+  fighters: [null, null],
+  localJump: { height: 0, velocity: 0, held: false },
+  cameraShake: 0,
+  impactFlash: 0
+};
+
+function makeRenderFighter(serverFighter, i) {
+  const x = typeof serverFighter?.x === 'number' ? serverFighter.x : (i === 0 ? 250 : 550);
+  const y = typeof serverFighter?.y === 'number' ? serverFighter.y : GY;
+  return {
+    x, y, hp: clamp(serverFighter?.hp ?? 100, 0, 100),
+    facing: serverFighter?.facing ?? (i === 0 ? 1 : -1),
+    state: serverFighter?.state ?? 'idle',
+    attackTimer: serverFighter?.attackTimer ?? 0,
+    attackType: serverFighter?.attackType ?? null,
+    hitTimer: serverFighter?.hitTimer ?? 0
+  };
 }
 
-/* ── BACKGROUND ── */
-function drawBG(){
-  const sk=ctx.createLinearGradient(0,0,0,GY);
-  sk.addColorStop(0,'#03000a');sk.addColorStop(1,'#0e0422');
-  ctx.fillStyle=sk;ctx.fillRect(0,0,W,GY);
+function predictedPlayerY(i, serverY) {
+  if (i !== playerIndex) return serverY;
+  const serverHeight = Math.max(0, GY - serverY);
+  return GY - Math.max(serverHeight, renderFx.localJump.height);
+}
 
-  /* moon glow */
-  const mg=ctx.createRadialGradient(660,70,5,660,70,120);
-  mg.addColorStop(0,'rgba(255,230,160,.18)');mg.addColorStop(1,'transparent');
-  ctx.fillStyle=mg;ctx.fillRect(0,0,W,GY);
-  /* moon body */
-  ctx.beginPath();ctx.arc(660,65,28,0,Math.PI*2);ctx.fillStyle='#fff8e0';ctx.fill();
-  ctx.beginPath();ctx.arc(673,60,22,0,Math.PI*2);ctx.fillStyle='#03000a';ctx.fill();
+function resolveState(serverFighter, displayY) {
+  if (!serverFighter) return 'idle';
+  if ((serverFighter.hitTimer ?? 0) > 0) return 'hit';
+  if ((serverFighter.attackTimer ?? 0) > 0) {
+    if (serverFighter.attackType === 'kick') return 'kick';
+    return 'punch';
+  }
+  if (displayY < GY - 3 || serverFighter.state === 'jump') return 'jump';
+  if (serverFighter.state === 'walk') return 'walk';
+  return 'idle';
+}
 
-  /* stars */
-  ctx.fillStyle='#ffffffaa';
-  [[30,18],[90,40],[155,12],[230,34],[300,10],[420,28],[490,8],[540,38],
-   [610,22],[700,42],[755,14],[50,58],[180,68],[350,50],[480,62],[570,45],[720,55],[810,30]].forEach(([sx,sy])=>{
-    ctx.beginPath();ctx.arc(sx,sy,Math.random()<.3?1.5:.8,0,Math.PI*2);ctx.fill();
+function updateLocalJumpPredictor() {
+  const jump = renderFx.localJump;
+  const wantsJump = !!keys['ArrowUp'];
+  const serverPlayer = gameState?.players?.[playerIndex];
+  const serverY = typeof serverPlayer?.y === 'number' ? serverPlayer.y : GY;
+  const serverHeight = Math.max(0, GY - serverY);
+  const grounded = serverHeight < 1.5 && jump.height < 1.5;
+
+  if (gameStarted && playerIndex !== -1 && wantsJump && !jump.held && grounded) {
+    jump.height = Math.max(jump.height, 0.1);
+    jump.velocity = 14;
+  }
+
+  if (jump.height > 0 || jump.velocity > 0 || serverHeight > 0) {
+    jump.height = Math.max(jump.height, serverHeight);
+    jump.height += jump.velocity;
+    jump.velocity -= 0.82;
+    if (serverHeight > jump.height) {
+      jump.height = serverHeight;
+      jump.velocity = Math.max(0, jump.velocity);
+    }
+    if (jump.height <= 0) {
+      jump.height = 0;
+      jump.velocity = 0;
+    }
+  }
+
+  jump.held = wantsJump;
+}
+
+function stepVisualState() {
+  if (!gameState?.players) return;
+
+  updateLocalJumpPredictor();
+
+  gameState.players.forEach((serverFighter, i) => {
+    if (!renderFx.fighters[i]) {
+      renderFx.fighters[i] = makeRenderFighter(serverFighter, i);
+    }
+
+    const rf = renderFx.fighters[i];
+    const serverX = typeof serverFighter.x === 'number' ? serverFighter.x : rf.x;
+    const serverY = typeof serverFighter.y === 'number' ? serverFighter.y : GY;
+    const targetY = predictedPlayerY(i, serverY);
+
+    rf.x = lerp(rf.x, serverX, 0.26);
+    rf.y = lerp(rf.y, targetY, 0.32);
+    rf.hp = lerp(rf.hp, clamp(serverFighter.hp ?? rf.hp, 0, 100), 0.28);
+    rf.facing = serverFighter.facing ?? rf.facing;
+    rf.state = resolveState(serverFighter, rf.y);
+    rf.attackTimer = serverFighter.attackTimer ?? 0;
+    rf.attackType = serverFighter.attackType ?? null;
+    rf.hitTimer = serverFighter.hitTimer ?? 0;
+
+    if ((serverFighter.hitTimer ?? 0) > 8) {
+      renderFx.cameraShake = Math.max(renderFx.cameraShake, 8);
+      renderFx.impactFlash = 0.8;
+    } else if ((serverFighter.attackTimer ?? 0) > 0) {
+      renderFx.cameraShake = Math.max(renderFx.cameraShake, 1.8);
+    }
   });
 
-  /* distant mountain silhouette */
-  ctx.fillStyle='#0a0218';
-  ctx.beginPath();ctx.moveTo(0,GY);
-  [0,80,160,100,200,130,240,60,280,110,360,40,420,90,480,50,530,100,600,30,660,80,720,20,780,70,800,GY].forEach((v,i)=>{
-    if(i%2===0) return;
-    ctx.lineTo(Math.round(i/2)*20, v);
-  });
-  /* simpler approach */
-  ctx.restore&&ctx.restore();
+  renderFx.cameraShake *= 0.86;
+  renderFx.impactFlash *= 0.82;
+}
+
+function buildRenderState() {
+  if (!gameState?.players) return null;
+  return {
+    ...gameState,
+    players: gameState.players.map((p, i) => {
+      const rf = renderFx.fighters[i] || makeRenderFighter(p, i);
+      return {
+        ...p,
+        x: rf.x,
+        y: rf.y,
+        hp: rf.hp,
+        facing: rf.facing,
+        state: rf.state,
+        attackTimer: rf.attackTimer,
+        attackType: rf.attackType,
+        hitTimer: rf.hitTimer
+      };
+    })
+  };
+}
+
+function findMatch() {
+  document.getElementById('matchBtn').disabled = true;
+  const s = document.getElementById('statusMsg');
+  s.textContent = '상대방을 찾는 중...';
+  s.className = 'pulse';
+  socket.emit('findMatch');
+}
+
+socket.on('waiting', () => {
+  const s = document.getElementById('statusMsg');
+  s.textContent = '대기 중... 상대방을 기다리는 중 ⏳';
+  s.className = 'pulse';
+});
+
+socket.on('matchFound', ({ roomId: rid, playerIndex: idx }) => {
+  roomId = rid;
+  playerIndex = idx;
+  document.getElementById('lobby').style.display = 'none';
+  document.getElementById('gameArea').style.display = 'block';
+  startCountdown();
+  startRenderLoop();
+});
+
+socket.on('gameState', state => {
+  gameState = state;
+  if (gameStarted) {
+    updateHUD(state);
+    if (state.gameOver && !gameOverShown) {
+      gameOverShown = true;
+      setTimeout(() => showOverlay(state), 700);
+    }
+  }
+});
+
+socket.on('opponentLeft', () => {
+  document.getElementById('ovr').className = 'ovr draw';
+  document.getElementById('ovr').textContent = 'DISCONNECTED';
+  document.getElementById('ovs').textContent = '상대방이 접속을 끊었습니다';
+  document.getElementById('overlay').style.display = 'flex';
+});
+
+function startCountdown() {
+  const el = document.getElementById('countdown');
+  el.style.display = 'flex';
+  const steps = ['3', '2', '1', 'FIGHT!'];
+  let i = 0;
+
+  function next() {
+    el.innerHTML = '';
+    if (i >= steps.length) {
+      el.style.display = 'none';
+      gameStarted = true;
+      startInputLoop();
+      return;
+    }
+    const isFight = steps[i] === 'FIGHT!';
+    const d = document.createElement('div');
+    d.className = isFight ? 'cdf' : 'cdn';
+    d.textContent = steps[i];
+    el.appendChild(d);
+    i++;
+    setTimeout(next, isFight ? 950 : 850);
+  }
+  next();
+}
+
+function startInputLoop() {
+  if (inputLoopId) return;
+  inputLoopId = setInterval(() => {
+    if (roomId && gameStarted) {
+      socket.emit('playerInput', { roomId, input: getInput() });
+    }
+  }, 1000 / 60);
+}
+
+function startRenderLoop() {
+  if (renderLoopStarted) return;
+  renderLoopStarted = true;
+
+  function frame() {
+    stepVisualState();
+    const renderState = buildRenderState();
+    if (renderState) draw(renderState);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+}
+
+function updateHUD(s) {
+  const h0 = Math.max(0, Math.ceil(s.players[0].hp));
+  const h1 = Math.max(0, Math.ceil(s.players[1].hp));
+  document.getElementById('hb0').style.width = h0 + '%';
+  document.getElementById('hb1').style.width = h1 + '%';
+  document.getElementById('hn0').textContent = h0;
+  document.getElementById('hn1').textContent = h1;
+  const t = s.timer;
+  const tn = document.getElementById('tnum');
+  tn.textContent = t;
+  tn.className = 'tnum' + (t <= 10 ? ' turgent' : '');
+  document.getElementById('hc0').className = 'hcol' + (h0 < 25 ? ' hdanger' : '');
+  document.getElementById('hc1').className = 'hcol r' + (h1 < 25 ? ' hdanger' : '');
+}
+
+function showOverlay(s) {
+  const ov = document.getElementById('overlay');
+  const r = document.getElementById('ovr');
+  const sb = document.getElementById('ovs');
+  ov.style.display = 'flex';
+
+  if (s.winner === -1) {
+    r.className = 'ovr draw';
+    r.textContent = 'DRAW';
+    sb.textContent = '무승부!';
+  } else if (s.winner === playerIndex) {
+    r.className = 'ovr win';
+    r.textContent = 'YOU WIN!';
+    sb.textContent = '승리! 상대를 쓰러뜨렸습니다';
+  } else {
+    r.className = 'ovr lose';
+    r.textContent = 'YOU LOSE';
+    sb.textContent = '패배... 다시 도전하세요';
+  }
+}
+
+function draw(s) {
+  ctx.clearRect(0, 0, W, H);
+
+  const shake = renderFx.cameraShake;
+  const sx = shake ? (Math.random() - 0.5) * shake : 0;
+  const sy = shake ? (Math.random() - 0.5) * shake * 0.6 : 0;
+
   ctx.save();
-  ctx.fillStyle='#0a0218';
-  ctx.beginPath();ctx.moveTo(0,GY);
-  const mpts=[[0,GY-20],[60,GY-60],[120,GY-40],[180,GY-80],[260,GY-50],[340,GY-100],[420,GY-60],[500,GY-90],[580,GY-45],[660,GY-110],[730,GY-55],[800,GY-30],[800,GY]];
-  mpts.forEach(([mx,my])=>ctx.lineTo(mx,my));
-  ctx.closePath();ctx.fill();
+  ctx.translate(sx, sy);
+
+  drawBG(s);
+
+  const order = s.players[0].x < s.players[1].x ? [0, 1] : [1, 0];
+  order.forEach(i => drawPlayer(s.players[i], i, s));
+
+  s.players.forEach((p, i) => {
+    if ((p.attackTimer ?? 0) > 0) drawAttackFX(p, i);
+    if ((p.hitTimer ?? 0) > 0) drawHitFX(p, i);
+    if (p.state === 'jump') drawAirTrail(p, i);
+  });
+
+  if (renderFx.impactFlash > 0.02) {
+    ctx.fillStyle = `rgba(255,255,255,${renderFx.impactFlash * 0.12})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  ctx.restore();
+}
+
+function drawBG(s) {
+  const sky = ctx.createLinearGradient(0, 0, 0, GY);
+  sky.addColorStop(0, '#050412');
+  sky.addColorStop(0.45, '#120a2b');
+  sky.addColorStop(1, '#2e0b15');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, GY);
+
+  const moonGlow = ctx.createRadialGradient(660, 85, 10, 660, 85, 170);
+  moonGlow.addColorStop(0, 'rgba(255,244,200,.22)');
+  moonGlow.addColorStop(1, 'rgba(255,210,160,0)');
+  ctx.fillStyle = moonGlow;
+  ctx.fillRect(0, 0, W, 210);
+
+  ctx.beginPath();
+  ctx.arc(660, 80, 34, 0, TAU);
+  ctx.fillStyle = '#fff6dc';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(676, 75, 28, 0, TAU);
+  ctx.fillStyle = '#0f081e';
+  ctx.fill();
+
+  ctx.strokeStyle = 'rgba(255,255,255,.08)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 8; i++) {
+    const y = 60 + i * 22;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y + 4);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = 'rgba(255,255,255,.8)';
+  const stars = [[35,22],[88,62],[152,18],[218,36],[270,14],[318,49],[402,27],[448,12],[512,42],[558,24],[612,48],[732,38],[768,16],[120,88],[310,84],[530,90],[705,72]];
+  stars.forEach(([x, y], i) => {
+    ctx.beginPath();
+    ctx.arc(x, y, i % 3 === 0 ? 1.4 : 0.85, 0, TAU);
+    ctx.fill();
+  });
+
+  const haze = ctx.createLinearGradient(0, 130, 0, GY);
+  haze.addColorStop(0, 'rgba(255,40,90,0)');
+  haze.addColorStop(1, 'rgba(255,70,20,.08)');
+  ctx.fillStyle = haze;
+  ctx.fillRect(0, 110, W, GY - 110);
+
+  ctx.fillStyle = '#0d071d';
+  const mountainLayers = [
+    [[0,290],[60,244],[130,270],[210,215],[280,256],[360,200],[445,248],[520,205],[600,255],[705,182],[800,230],[800,GY],[0,GY]],
+    [[0,312],[82,262],[145,290],[230,248],[315,284],[405,230],[495,283],[574,248],[650,290],[740,235],[800,270],[800,GY],[0,GY]]
+  ];
+  mountainLayers.forEach((pts, idx) => {
+    ctx.beginPath();
+    pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
+    ctx.closePath();
+    ctx.fillStyle = idx === 0 ? '#090415' : '#13081f';
+    ctx.fill();
+  });
+
+  ctx.save();
+  ctx.globalAlpha = 0.16;
+  ctx.strokeStyle = '#ff4f2c';
+  ctx.lineWidth = 18;
+  ctx.beginPath();
+  ctx.moveTo(330, 170);
+  ctx.lineTo(470, 170);
+  ctx.stroke();
+  ctx.lineWidth = 10;
+  ctx.beginPath();
+  ctx.moveTo(340, 188);
+  ctx.lineTo(460, 188);
+  ctx.stroke();
+  ctx.lineWidth = 14;
+  ctx.beginPath();
+  ctx.moveTo(350, 170);
+  ctx.lineTo(350, GY - 10);
+  ctx.moveTo(450, 170);
+  ctx.lineTo(450, GY - 10);
+  ctx.stroke();
   ctx.restore();
 
-  /* torii gate */
-  ctx.save();ctx.globalAlpha=.12;ctx.strokeStyle='#dd2200';
-  ctx.lineWidth=13;ctx.strokeRect(330,165,140,GY-165);
-  ctx.lineWidth=20;ctx.beginPath();ctx.moveTo(305,165);ctx.lineTo(495,165);ctx.stroke();
-  ctx.lineWidth=12;ctx.beginPath();ctx.moveTo(312,183);ctx.lineTo(488,183);ctx.stroke();
-  ctx.restore();
-
-  /* city silhouette */
-  ctx.save();ctx.fillStyle='#080116';
-  const blds=[[0,52,46],[48,74,42],[92,46,50],[144,85,44],[190,40,48],[240,66,52],[294,50,46],[342,80,42],[386,44,48],[436,70,44],[482,58,50],[534,88,44],[580,36,50],[632,74,42],[676,60,48],[726,42,46],[774,68,26]];
-  blds.forEach(([bx,bh,bw])=>{
-    ctx.fillRect(bx,GY-bh,bw-2,bh);
-    /* windows */
-    ctx.fillStyle='#1a0830';
-    for(let wy=GY-bh+6;wy<GY-8;wy+=10){
-      for(let wx=bx+4;wx<bx+bw-6;wx+=8){
-        if(Math.sin(wx*wy)>.2) ctx.fillRect(wx,wy,4,5);
+  ctx.fillStyle = '#130514';
+  const buildings = [
+    [0,72,46],[46,96,40],[90,62,52],[143,110,38],[182,72,56],[240,124,48],[292,78,54],
+    [350,104,42],[393,72,50],[445,118,42],[488,82,54],[546,134,40],[588,76,50],[640,108,46],[688,70,58],[748,126,52]
+  ];
+  buildings.forEach(([x, h, w], idx) => {
+    ctx.fillRect(x, GY - h, w, h);
+    ctx.fillStyle = 'rgba(255,186,90,.10)';
+    for (let wy = GY - h + 8; wy < GY - 8; wy += 11) {
+      for (let wx = x + 5; wx < x + w - 5; wx += 9) {
+        if (((wx + wy + idx) % 4) < 2) ctx.fillRect(wx, wy, 4, 5);
       }
     }
-    ctx.fillStyle='#ffcc4411';
-    for(let wy=GY-bh+6;wy<GY-8;wy+=10){
-      for(let wx=bx+4;wx<bx+bw-6;wx+=8){
-        if(Math.sin(wx*wy)>.5) ctx.fillRect(wx,wy,4,5);
-      }
+    ctx.fillStyle = '#130514';
+  });
+
+  const floor = ctx.createLinearGradient(0, GY, 0, H);
+  floor.addColorStop(0, '#321109');
+  floor.addColorStop(0.4, '#140604');
+  floor.addColorStop(1, '#050202');
+  ctx.fillStyle = floor;
+  ctx.fillRect(0, GY, W, H - GY);
+
+  const floorGlow = ctx.createLinearGradient(0, GY, 0, H);
+  floorGlow.addColorStop(0, 'rgba(255,103,44,.2)');
+  floorGlow.addColorStop(1, 'rgba(255,103,44,0)');
+  ctx.fillStyle = floorGlow;
+  ctx.fillRect(0, GY, W, 90);
+
+  ctx.strokeStyle = 'rgba(255,99,58,.14)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 16; i++) {
+    const x = i * 52;
+    ctx.beginPath();
+    ctx.moveTo(x, GY);
+    ctx.lineTo(400 + (x - 400) * 2.4, H);
+    ctx.stroke();
+  }
+  for (let i = 0; i < 8; i++) {
+    const y = GY + i * 18;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y + i * 4);
+    ctx.stroke();
+  }
+
+  ctx.save();
+  ctx.shadowColor = '#ff5b2d';
+  ctx.shadowBlur = 16;
+  ctx.strokeStyle = 'rgba(255,96,42,.32)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, GY);
+  ctx.lineTo(W, GY);
+  ctx.stroke();
+  ctx.restore();
+
+  drawStageLights(s);
+}
+
+function drawStageLights(s) {
+  const centerX = (s.players[0].x + s.players[1].x) * 0.5;
+  const beam = ctx.createRadialGradient(centerX, 280, 10, centerX, 280, 250);
+  beam.addColorStop(0, 'rgba(255,120,70,.16)');
+  beam.addColorStop(1, 'rgba(255,120,70,0)');
+  ctx.fillStyle = beam;
+  ctx.fillRect(centerX - 260, 40, 520, H - 40);
+}
+
+function capsule(x, y, w, h, fill, stroke, radius = Math.min(w, h) / 2) {
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, radius);
+  ctx.fillStyle = fill;
+  ctx.fill();
+  if (stroke) {
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+}
+
+function glowStroke(color, width, fn) {
+  ctx.save();
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 14;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  fn();
+  ctx.restore();
+}
+
+function drawPlayer(p, idx, s) {
+  const pal = palettes[idx];
+  const t = performance.now() * 0.001;
+  const facing = p.facing ?? (idx === 0 ? 1 : -1);
+  const air = Math.max(0, GY - p.y);
+  const walkPhase = p.state === 'walk' ? Math.sin(t * 10 + idx * 1.2) : 0;
+  const idleBob = (p.state === 'idle' ? Math.sin(t * 3.6 + idx) * 2.5 : 0);
+  const attackProgress = clamp(1 - ((p.attackTimer ?? 0) / 25), 0, 1);
+  const strike = Math.sin(attackProgress * Math.PI);
+  const hitFlash = (p.hitTimer ?? 0) > 0;
+  const jumpLean = p.state === 'jump' ? -0.08 : 0;
+  const scaleY = p.state === 'jump' ? 0.98 : 1;
+
+  ctx.save();
+  ctx.translate(p.x, p.y + idleBob);
+  if (facing < 0) ctx.scale(-1, 1);
+  ctx.scale(1, scaleY);
+
+  if (air < 2) {
+    const sw = lerp(42, 24, clamp(air / 90, 0, 1));
+    const sg = ctx.createRadialGradient(0, 8, 0, 0, 8, sw);
+    sg.addColorStop(0, 'rgba(0,0,0,.48)');
+    sg.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = sg;
+    ctx.beginPath();
+    ctx.ellipse(0, 8, sw, sw * 0.32, 0, 0, TAU);
+    ctx.fill();
+  } else {
+    const sw = lerp(38, 20, clamp(air / 110, 0, 1));
+    ctx.fillStyle = 'rgba(0,0,0,.26)';
+    ctx.beginPath();
+    ctx.ellipse(0, 8, sw, sw * 0.22, 0, 0, TAU);
+    ctx.fill();
+  }
+
+  if (p.state === 'jump') {
+    const aura = ctx.createRadialGradient(0, -70, 8, 0, -70, 70);
+    aura.addColorStop(0, pal.aura2);
+    aura.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = aura;
+    ctx.beginPath();
+    ctx.arc(0, -70, 70, 0, TAU);
+    ctx.fill();
+  }
+
+  const rearLeg = p.state === 'jump' ? -0.8 : (p.state === 'walk' ? walkPhase * 0.45 : 0.15);
+  const frontLeg = p.state === 'jump' ? 0.95 : (p.state === 'walk' ? -walkPhase * 0.45 : -0.14);
+  const rearArm = p.state === 'jump' ? -0.85 : (p.state === 'walk' ? -walkPhase * 0.28 : -0.18);
+  let frontArm = p.state === 'jump' ? 0.65 : (p.state === 'walk' ? walkPhase * 0.28 : 0.3);
+  let frontKick = 0;
+
+  if (p.state === 'punch') {
+    frontArm = -0.35 + strike * 1.65;
+  }
+  if (p.state === 'kick') {
+    frontArm = 0.95 - strike * 0.55;
+    frontKick = -0.35 + strike * 1.55;
+  }
+
+  drawLeg(-12, -6, rearLeg, pal, p.state === 'jump', false);
+  drawLeg(8, -6, frontKick || frontLeg, pal, p.state === 'jump', true);
+
+  drawTorso(pal, jumpLean, hitFlash);
+
+  drawArm(-23, -82, rearArm, pal, false, p.state === 'jump');
+  drawArm(16, -82, frontArm, pal, true, p.state === 'jump', p.state === 'punch');
+
+  drawHead(pal, p.state, hitFlash, idx);
+
+  if (p.state === 'kick') {
+    drawKickFlare(28, -44, strike, pal);
+  }
+  if (p.state === 'punch') {
+    drawPunchFlare(42, -70, strike, pal);
+  }
+
+  if (hitFlash) {
+    ctx.fillStyle = 'rgba(255,255,255,.18)';
+    ctx.beginPath();
+    ctx.arc(0, -70, 48, 0, TAU);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function drawLeg(x, y, angle, pal, jumping, frontSide) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  capsule(-8, -34, 16, 38, pal.mainDark, '#0c0c0f', 8);
+  capsule(-9, -8, 18, 42, pal.main, '#07080a', 9);
+  ctx.fillStyle = 'rgba(255,255,255,.12)';
+  ctx.fillRect(-7, -6, 4, 32);
+
+  ctx.translate(0, 30);
+  ctx.rotate(jumping ? 0.5 : (frontSide ? -0.22 : 0.12));
+  capsule(-10, -2, 20, 22, pal.boots, '#050508', 8);
+  ctx.fillStyle = 'rgba(255,255,255,.08)';
+  ctx.fillRect(-7, 1, 4, 13);
+  ctx.fillStyle = '#11131a';
+  ctx.beginPath();
+  ctx.ellipse(7, 16, 14, 6, -0.08, 0, TAU);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawTorso(pal, lean, hitFlash) {
+  ctx.save();
+  ctx.translate(0, -54);
+  ctx.rotate(lean);
+
+  ctx.beginPath();
+  ctx.moveTo(-24, -44);
+  ctx.lineTo(22, -44);
+  ctx.lineTo(28, 14);
+  ctx.lineTo(-28, 14);
+  ctx.closePath();
+  ctx.fillStyle = pal.mainDark;
+  ctx.fill();
+  ctx.strokeStyle = '#07080a';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(-22, -42);
+  ctx.lineTo(0, -26);
+  ctx.lineTo(0, 14);
+  ctx.lineTo(-29, 14);
+  ctx.closePath();
+  ctx.fillStyle = pal.main;
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.moveTo(22, -42);
+  ctx.lineTo(0, -26);
+  ctx.lineTo(0, 14);
+  ctx.lineTo(29, 14);
+  ctx.closePath();
+  ctx.fillStyle = pal.main;
+  ctx.fill();
+
+  ctx.strokeStyle = pal.mainLight;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-13, -37);
+  ctx.lineTo(0, -27);
+  ctx.lineTo(13, -37);
+  ctx.stroke();
+
+  capsule(-28, 10, 56, 9, pal.belt, '#0a0a0d', 4);
+  ctx.fillStyle = pal.trim;
+  ctx.beginPath();
+  ctx.ellipse(0, 14, 7, 5, 0, 0, TAU);
+  ctx.fill();
+  ctx.strokeStyle = '#0b0c0f';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.fillStyle = pal.trim;
+  ctx.fillRect(-4, 18, 4, 18);
+  ctx.fillRect(2, 18, 4, 16);
+
+  ctx.fillStyle = pal.skin;
+  capsule(-6, -52, 12, 12, pal.skin, '#35210e', 3);
+
+  if (hitFlash) {
+    ctx.strokeStyle = 'rgba(255,255,255,.6)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(-24, -38, 48, 44);
+  }
+  ctx.restore();
+}
+
+function drawArm(x, y, angle, pal, front, jumping, punching = false) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+
+  capsule(-8, -4, 16, 28, pal.mainDark, '#08090c', 8);
+  ctx.translate(0, 22);
+  ctx.rotate(punching ? 0.1 : (jumping ? 0.35 : -0.05));
+  capsule(-7, -3, 14, 32, pal.main, '#07080a', 7);
+  ctx.fillStyle = 'rgba(255,255,255,.12)';
+  ctx.fillRect(-5, -1, 3, 24);
+
+  ctx.translate(front ? 2 : -2, 28);
+  ctx.rotate(front ? 0.08 : -0.06);
+  capsule(-9, -3, 18, 16, pal.glove, '#07080a', 7);
+  ctx.fillStyle = pal.skin;
+  capsule(-6, 8, 12, 9, pal.skin, '#35210e', 4);
+  ctx.restore();
+}
+
+function drawHead(pal, state, hitFlash, idx) {
+  ctx.save();
+  ctx.translate(0, -118);
+
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 20, 24, 0, 0, TAU);
+  ctx.fillStyle = pal.skin;
+  ctx.fill();
+  ctx.strokeStyle = '#35210e';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  ctx.fillStyle = pal.skin2;
+  ctx.beginPath();
+  ctx.ellipse(-18, 1, 5, 6, -0.1, 0, TAU);
+  ctx.fill();
+
+  ctx.fillStyle = pal.hair;
+  if (idx === 0) {
+    ctx.beginPath();
+    ctx.moveTo(-20, -2);
+    ctx.lineTo(-14, -23);
+    ctx.lineTo(-6, -12);
+    ctx.lineTo(0, -29);
+    ctx.lineTo(7, -14);
+    ctx.lineTo(15, -25);
+    ctx.lineTo(20, -4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillRect(-20, -8, 40, 8);
+  } else {
+    ctx.beginPath();
+    ctx.moveTo(-20, -2);
+    ctx.lineTo(-18, -23);
+    ctx.lineTo(0, -28);
+    ctx.lineTo(18, -20);
+    ctx.lineTo(20, 6);
+    ctx.lineTo(16, 16);
+    ctx.lineTo(12, 34);
+    ctx.lineTo(-12, 34);
+    ctx.lineTo(-17, 20);
+    ctx.lineTo(-20, 6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = pal.mainLight;
+    ctx.fillRect(-18, -8, 36, 6);
+  }
+
+  ctx.strokeStyle = '#1b1214';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(2, -6);
+  ctx.lineTo(15, -4);
+  ctx.stroke();
+
+  ctx.fillStyle = '#f7f7f3';
+  ctx.beginPath();
+  ctx.ellipse(10, 3, 5.8, 4.2, 0, 0, TAU);
+  ctx.fill();
+
+  ctx.fillStyle = hitFlash ? '#ff3a2b' : pal.eye;
+  ctx.beginPath();
+  ctx.ellipse(11, 3, 3.3, 3.6, 0, 0, TAU);
+  ctx.fill();
+
+  ctx.fillStyle = '#050505';
+  ctx.beginPath();
+  ctx.arc(12, 3, 1.6, 0, TAU);
+  ctx.fill();
+
+  ctx.fillStyle = 'rgba(255,255,255,.85)';
+  ctx.beginPath();
+  ctx.arc(12.8, 1.6, 0.85, 0, TAU);
+  ctx.fill();
+
+  ctx.strokeStyle = pal.skin2;
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(2, 4);
+  ctx.quadraticCurveTo(5, 8, 2, 12);
+  ctx.stroke();
+
+  ctx.strokeStyle = state === 'hit' ? '#ff3d29' : '#7b4a34';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  if (state === 'punch' || state === 'kick') {
+    ctx.moveTo(-2, 18);
+    ctx.lineTo(10, 18);
+  } else if (state === 'hit') {
+    ctx.arc(4, 18, 6, 0.2, Math.PI - 0.2, true);
+  } else {
+    ctx.arc(4, 17, 5, 0, Math.PI);
+  }
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function drawPunchFlare(x, y, strike, pal) {
+  if (strike <= 0.04) return;
+  ctx.save();
+  ctx.translate(x + strike * 26, y - strike * 6);
+  ctx.globalAlpha = strike;
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 26);
+  g.addColorStop(0, 'rgba(255,255,255,.95)');
+  g.addColorStop(0.35, pal.aura);
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(0, 0, 26, 0, TAU);
+  ctx.fill();
+
+  glowStroke(pal.aura, 2.4, () => {
+    ctx.beginPath();
+    for (let i = 0; i < 4; i++) {
+      ctx.moveTo(-18 + i * 6, -8 + i);
+      ctx.lineTo(14 + i * 7, -15 + i * 4);
     }
-    ctx.fillStyle='#080116';
+    ctx.stroke();
   });
   ctx.restore();
-
-  /* ground */
-  const gg=ctx.createLinearGradient(0,GY,0,H);
-  gg.addColorStop(0,'#1c0a03');gg.addColorStop(1,'#050100');
-  ctx.fillStyle=gg;ctx.fillRect(0,GY,W,H-GY);
-
-  /* ground glow */
-  ctx.save();
-  ctx.shadowColor='#ff4400';ctx.shadowBlur=14;
-  ctx.strokeStyle='#ff440055';ctx.lineWidth=1.5;
-  ctx.beginPath();ctx.moveTo(0,GY);ctx.lineTo(W,GY);ctx.stroke();
-  ctx.restore();
-  for(let i=1;i<7;i++){
-    ctx.strokeStyle=`rgba(255,68,0,${.03-i*.004})`;
-    ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(0,GY+i*15);ctx.lineTo(W,GY+i*15);ctx.stroke();
-  }
-
-  /* floor tiles */
-  ctx.strokeStyle='rgba(255,68,0,.04)';ctx.lineWidth=1;
-  for(let tx=0;tx<W;tx+=60){
-    ctx.beginPath();ctx.moveTo(tx,GY);ctx.lineTo(tx,H);ctx.stroke();
-  }
 }
 
-/* ── CHARACTER DRAWING ── */
-function drawPlayer(p,idx){
-  const c=P[idx];
-  const airH=Math.max(0,GY-p.y);
-  const gy=GY-airH;
-  const t=T();
-  const walk=p.state==='walk';
-  const jump=p.state==='jump'||airH>2;
-  const punch=p.state==='punch'&&p.attackTimer>0;
-  const kick=p.state==='kick'&&p.attackTimer>0;
-  const hit=p.hitTimer>0;
-  const bv=walk?Math.sin(t*.016)*3:0;
-  const at=p.attackTimer/25; /* 0→1 attack progress */
-
+function drawKickFlare(x, y, strike, pal) {
+  if (strike <= 0.04) return;
   ctx.save();
-  ctx.translate(p.x, gy);
-  /* flip so character always faces opponent */
-  if(p.facing<0) ctx.scale(-1,1);
-  if(hit) ctx.globalAlpha=.5+Math.abs(Math.sin(t*.08))*.5;
-
-  /* SHADOW */
-  if(airH<5){
-    ctx.save();
-    ctx.globalAlpha=(hit?ctx.globalAlpha*.6:.5);
-    const sw=Math.max(14,24-airH*.3);
-    const sg=ctx.createRadialGradient(0,4,0,0,4,sw);
-    sg.addColorStop(0,'rgba(0,0,0,.6)');sg.addColorStop(1,'transparent');
-    ctx.fillStyle=sg;ctx.beginPath();ctx.ellipse(0,4,sw,sw*.35,0,0,Math.PI*2);ctx.fill();
-    ctx.restore();
-  }
-
-  const b=bv; /* vertical bounce */
-
-  /* ── LEGS ── */
-  if(kick){
-    /* standing leg */
-    drawLimb(ctx,-6,-16+b,10,30,c.pants,c.pantsDark,-0.05);
-    /* kick leg swings forward */
-    const ka=-.3+at*1.4;
-    ctx.save();ctx.translate(4,-20+b);ctx.rotate(ka);
-    drawLimb(ctx,0,0,10,28,c.pants,c.pantsDark,0);
-    /* shoe */
-    ctx.fillStyle='#111';
-    ctx.beginPath();ctx.ellipse(14,26,14,6,-.2,0,Math.PI*2);ctx.fill();
-    ctx.restore();
-  } else if(jump){
-    /* tucked legs */
-    ctx.save();ctx.translate(-8,-22+b);ctx.rotate(-.5);
-    drawLimb(ctx,0,0,10,24,c.pants,c.pantsDark,0);ctx.restore();
-    ctx.save();ctx.translate(6,-22+b);ctx.rotate(.5);
-    drawLimb(ctx,0,0,10,24,c.pants,c.pantsDark,0);ctx.restore();
-  } else if(walk){
-    const wa=Math.sin(t*.016);
-    ctx.save();ctx.translate(-8,-18+b);ctx.rotate(wa*.3);
-    drawLimb(ctx,0,0,10,28,c.pants,c.pantsDark,0);
-    /* shoe */
-    ctx.fillStyle='#111';ctx.beginPath();ctx.ellipse(wa*3,26,10,5,0,0,Math.PI*2);ctx.fill();
-    ctx.restore();
-    ctx.save();ctx.translate(5,-18+b);ctx.rotate(-wa*.3);
-    drawLimb(ctx,0,0,10,28,c.pants,c.pantsDark,0);
-    ctx.fillStyle='#111';ctx.beginPath();ctx.ellipse(-wa*3,26,10,5,0,0,Math.PI*2);ctx.fill();
-    ctx.restore();
-  } else {
-    /* idle stance - slight crouch */
-    drawLimb(ctx,-10,-16+b,10,28,c.pants,c.pantsDark,.08);
-    drawLimb(ctx,4,-16+b,10,28,c.pants,c.pantsDark,-.08);
-    /* shoes */
-    ctx.fillStyle='#111';
-    ctx.beginPath();ctx.ellipse(-6,13+b,11,5,0,0,Math.PI*2);ctx.fill();
-    ctx.beginPath();ctx.ellipse(8,13+b,11,5,0,0,Math.PI*2);ctx.fill();
-  }
-
-  /* ── TORSO / GI ── */
-  /* back of gi */
-  ctx.fillStyle=c.giDark;
+  ctx.translate(x + strike * 24, y - strike * 8);
+  ctx.globalAlpha = strike;
+  glowStroke(pal.aura, 3.1, () => {
+    ctx.beginPath();
+    ctx.arc(0, 0, 36 + strike * 8, -1.1, 0.38);
+    ctx.stroke();
+  });
+  const spark = ctx.createRadialGradient(0, 0, 0, 0, 0, 18);
+  spark.addColorStop(0, 'rgba(255,255,255,.9)');
+  spark.addColorStop(0.45, pal.aura);
+  spark.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = spark;
   ctx.beginPath();
-  ctx.moveTo(-16,-46+b);ctx.lineTo(16,-46+b);
-  ctx.lineTo(18,-18+b);ctx.lineTo(-18,-18+b);ctx.closePath();ctx.fill();
-  /* front gi panels */
-  ctx.fillStyle=c.gi;
-  ctx.beginPath();
-  ctx.moveTo(-16,-46+b);ctx.lineTo(0,-36+b);ctx.lineTo(0,-18+b);ctx.lineTo(-18,-18+b);ctx.closePath();ctx.fill();
-  ctx.beginPath();
-  ctx.moveTo(16,-46+b);ctx.lineTo(0,-36+b);ctx.lineTo(0,-18+b);ctx.lineTo(18,-18+b);ctx.closePath();ctx.fill();
-  /* gi highlight */
-  ctx.fillStyle=c.giLight;
-  ctx.beginPath();ctx.moveTo(-8,-46+b);ctx.lineTo(0,-38+b);ctx.lineTo(0,-36+b);ctx.lineTo(-10,-44+b);ctx.closePath();ctx.fill();
-  /* collar */
-  ctx.strokeStyle=c.giLight;ctx.lineWidth=1.5;
-  ctx.beginPath();ctx.moveTo(-16,-46+b);ctx.lineTo(0,-38+b);ctx.lineTo(16,-46+b);ctx.stroke();
-
-  /* belt */
-  ctx.fillStyle=c.belt;
-  ctx.beginPath();ctx.roundRect(-18,-20+b,36,6,2);ctx.fill();
-  ctx.strokeStyle='rgba(0,0,0,.3)';ctx.lineWidth=.5;ctx.stroke();
-  /* belt knot */
-  ctx.fillStyle=c.belt;
-  ctx.beginPath();ctx.ellipse(0,-17+b,5,4,0,0,Math.PI*2);ctx.fill();
-  /* belt tails */
-  ctx.fillStyle=c.belt;
-  ctx.fillRect(-5,-14+b,4,10+b*.5);ctx.fillRect(1,-14+b,4,12+b*.3);
-
-  /* ── ARMS ── */
-  if(punch){
-    /* rear arm stays back */
-    drawLimb(ctx,-14,-44+b,9,22,c.gi,c.giDark,.15);
-    /* punch arm extends forward */
-    const px=at*52;
-    ctx.save();ctx.translate(-14,-42+b);
-    ctx.fillStyle=c.gi;
-    ctx.beginPath();ctx.roundRect(0,-5,px+14,10,4);ctx.fill();
-    /* fist */
-    ctx.fillStyle=c.skin;
-    ctx.beginPath();ctx.roundRect(px+10,-7,14,14,3);ctx.fill();
-    /* knuckle lines */
-    ctx.strokeStyle=c.skinDark;ctx.lineWidth=1;
-    for(let k=0;k<3;k++){ctx.beginPath();ctx.moveTo(px+12+k*3,-5);ctx.lineTo(px+12+k*3,5);ctx.stroke();}
-    ctx.restore();
-  } else if(kick){
-    /* both arms balance out */
-    drawLimb(ctx,-18,-44+b,9,22,c.gi,c.giDark,-.3);
-    drawLimb(ctx,10,-44+b,9,22,c.gi,c.giDark,.2);
-  } else if(jump){
-    drawLimb(ctx,-17,-44+b,9,20,c.gi,c.giDark,-.5);
-    drawLimb(ctx,10,-44+b,9,20,c.gi,c.giDark,.4);
-  } else if(walk){
-    const wa=Math.sin(t*.016);
-    drawLimb(ctx,-16,-44+b,9,22,c.gi,c.giDark,-wa*.3-.1);
-    drawLimb(ctx,9,-44+b,9,22,c.gi,c.giDark,wa*.3+.1);
-  } else {
-    /* idle guard pose */
-    drawLimb(ctx,-16,-44+b,9,22,c.gi,c.giDark,.2);
-    drawLimb(ctx,9,-44+b,9,22,c.gi,c.giDark,-.15);
-  }
-
-  /* ── NECK ── */
-  ctx.fillStyle=c.skin;
-  ctx.beginPath();ctx.roundRect(-5,-52+b,10,10,3);ctx.fill();
-
-  /* ── HEAD ── */
-  /* head base */
-  ctx.fillStyle=c.skin;
-  ctx.beginPath();ctx.ellipse(0,-64+b,14,17,0,0,Math.PI*2);ctx.fill();
-  /* ear */
-  ctx.fillStyle=c.skinDark;
-  ctx.beginPath();ctx.ellipse(-13,-62+b,4,5,-.2,0,Math.PI*2);ctx.fill();
-  ctx.fillStyle=c.skin;
-  ctx.beginPath();ctx.ellipse(-13,-62+b,2.5,3.5,-.2,0,Math.PI*2);ctx.fill();
-
-  /* ── HAIR ── */
-  ctx.fillStyle=c.hair;
-  if(idx===0){
-    /* KAZE: slicked back hair with spikes */
-    ctx.beginPath();ctx.ellipse(0,-76+b,14,7,0,0,Math.PI);ctx.fill();
-    /* spikes */
-    [[0,-84],[-6,-82],[6,-82],[10,-78]].forEach(([hx,hy])=>{
-      ctx.beginPath();ctx.moveTo(hx-4,hy+6+b);ctx.lineTo(hx,hy+b);ctx.lineTo(hx+4,hy+6+b);ctx.fill();
-    });
-    ctx.fillRect(-14,-77+b,28,5);
-  } else {
-    /* RION: long flowing hair */
-    ctx.beginPath();ctx.ellipse(0,-76+b,14,7,0,0,Math.PI);ctx.fill();
-    ctx.fillRect(-14,-78+b,28,8);
-    /* flowing strands */
-    ctx.beginPath();ctx.moveTo(-14,-76+b);
-    ctx.quadraticCurveTo(-22,-65+b,-20,-50+b);ctx.quadraticCurveTo(-19,-42+b,-16,-36+b);
-    ctx.lineWidth=6;ctx.strokeStyle=c.hair;ctx.stroke();
-    ctx.beginPath();ctx.moveTo(-10,-77+b);
-    ctx.quadraticCurveTo(-18,-68+b,-17,-55+b);ctx.quadraticCurveTo(-16,-46+b,-14,-40+b);
-    ctx.lineWidth=4;ctx.stroke();
-    /* headband */
-    ctx.fillStyle=c.acc;ctx.fillRect(-15,-70+b,30,5);
-    /* headband knot */
-    ctx.beginPath();ctx.moveTo(13,-70+b);ctx.lineTo(18,-66+b);ctx.lineTo(14,-62+b);
-    ctx.lineWidth=3;ctx.strokeStyle=c.acc;ctx.stroke();
-  }
-
-  /* ── FACE ── */
-  /* eyebrow */
-  ctx.strokeStyle='#1a0a00';ctx.lineWidth=2;
-  ctx.beginPath();ctx.moveTo(3,-72+b);ctx.lineTo(11,-70+b);ctx.stroke();
-  /* eye white */
-  ctx.fillStyle='#f0f0e8';
-  ctx.beginPath();ctx.ellipse(7,-66+b,4.5,3.5,0,0,Math.PI*2);ctx.fill();
-  /* iris */
-  ctx.fillStyle=hit?'#ff0000':(idx===0?'#2255aa':'#aa3322');
-  ctx.beginPath();ctx.ellipse(7,-66+b,2.8,3,0,0,Math.PI*2);ctx.fill();
-  /* pupil */
-  ctx.fillStyle='#000';
-  ctx.beginPath();ctx.ellipse(7.5,-66+b,1.5,2,0,0,Math.PI*2);ctx.fill();
-  /* eye shine */
-  ctx.fillStyle='rgba(255,255,255,.7)';
-  ctx.beginPath();ctx.arc(8.5,-67.5+b,.8,0,Math.PI*2);ctx.fill();
-
-  /* nose */
-  ctx.strokeStyle=c.skinDark;ctx.lineWidth=1.2;
-  ctx.beginPath();ctx.moveTo(3,-62+b);ctx.quadraticCurveTo(5,-59+b,3,-57+b);ctx.stroke();
-
-  /* mouth - changes with state */
-  ctx.strokeStyle='#8a4a30';ctx.lineWidth=1.5;
-  if(hit){
-    ctx.beginPath();ctx.arc(3,-53+b,4,.2,Math.PI-.2,true);ctx.stroke();
-  } else if(punch||kick){
-    ctx.beginPath();ctx.moveTo(-1,-53+b);ctx.lineTo(7,-53+b);ctx.stroke();
-    /* gritting teeth */
-    ctx.strokeStyle='#fff';ctx.lineWidth=.5;
-    for(let m=0;m<4;m++){ctx.beginPath();ctx.moveTo(m*2,-53+b);ctx.lineTo(m*2,-55+b);ctx.stroke();}
-  } else {
-    ctx.beginPath();ctx.arc(3,-53+b,4,0,Math.PI);ctx.stroke();
-  }
-
-  /* hit spark on face */
-  if(hit&&p.hitTimer>10){
-    ctx.fillStyle='#ff4400';
-    ctx.beginPath();ctx.arc(5,-64+b,5,0,Math.PI*2);ctx.fill();
-    ctx.fillStyle='#ffcc00';
-    ctx.beginPath();ctx.arc(5,-64+b,2.5,0,Math.PI*2);ctx.fill();
-  }
-
+  ctx.arc(0, 0, 18, 0, TAU);
+  ctx.fill();
   ctx.restore();
 }
 
-/* helper: draw a limb (arm or leg) as a tapered rounded rect */
-function drawLimb(ctx,x,y,w,h,col,dark,angle){
-  ctx.save();
-  ctx.translate(x+w/2, y);
-  ctx.rotate(angle||0);
-  /* dark side */
-  ctx.fillStyle=dark;
-  ctx.beginPath();ctx.roundRect(-w/2+1,0,w-1,h,w/2);ctx.fill();
-  /* main side */
-  ctx.fillStyle=col;
-  ctx.beginPath();ctx.roundRect(-w/2,0,w-2,h,w/2);ctx.fill();
-  /* highlight */
-  ctx.fillStyle='rgba(255,255,255,.08)';
-  ctx.beginPath();ctx.roundRect(-w/2,0,w*.4,h,w/2);ctx.fill();
-  ctx.restore();
-}
-
-/* ── ATTACK FX ──
-   KEY FIX: all FX are drawn in WORLD SPACE, no ctx.scale flip.
-   We use p.facing to determine which direction the effect goes.
-*/
-function drawAttackFX(p,idx){
-  const c=P[idx];
-  const groundH=Math.max(0,GY-p.y);
-  const py=GY-groundH; /* player's feet Y in world */
-  const dir=p.facing;  /* +1=right, -1=left */
-  const at=p.attackTimer/25;
-  const t=T();
+function drawAttackFX(p, idx) {
+  const pal = palettes[idx];
+  const facing = p.facing ?? 1;
+  const progress = clamp(1 - ((p.attackTimer ?? 0) / 25), 0, 1);
+  const strike = Math.sin(progress * Math.PI);
+  const px = p.x;
+  const py = p.y;
 
   ctx.save();
-  ctx.globalAlpha=Math.min(1,at*1.5);
-
-  if(p.attackType==='punch'){
-    /* fist impact point: out in front of player */
-    const fx=p.x + dir*58;
-    const fy=py-60;
-
-    /* energy ring burst */
-    const rings=[{r:28,w:3,col:c.energyCol},{r:20,w:4,col:'#fff'},{r:38,w:2,col:c.energyCol2}];
-    rings.forEach(({r,w,col})=>{
-      ctx.beginPath();ctx.arc(fx,fy,r*(1+at*.3),0,Math.PI*2);
-      ctx.strokeStyle=col;ctx.lineWidth=w;ctx.stroke();
-    });
-
-    /* impact core flash */
-    const flash=ctx.createRadialGradient(fx,fy,0,fx,fy,22);
-    flash.addColorStop(0,'rgba(255,255,220,.9)');
-    flash.addColorStop(.5,c.energyCol+'88');
-    flash.addColorStop(1,'transparent');
-    ctx.fillStyle=flash;ctx.beginPath();ctx.arc(fx,fy,22,0,Math.PI*2);ctx.fill();
-
-    /* speed lines radiating from impact — in correct direction */
-    ctx.strokeStyle=c.energyCol;ctx.lineWidth=1.5;
-    for(let i=0;i<8;i++){
-      const ang=(i/8)*Math.PI*2;
-      const len=14+i%3*8;
-      const sx=fx+Math.cos(ang)*12;const sy=fy+Math.sin(ang)*12;
-      ctx.beginPath();ctx.moveTo(sx,sy);
-      ctx.lineTo(sx+Math.cos(ang)*len,sy+Math.sin(ang)*len);ctx.stroke();
-    }
-
-    /* motion blur streaks behind fist (toward dir) */
-    ctx.globalAlpha*=.6;
-    for(let i=1;i<=3;i++){
-      const ox=fx-dir*i*12;
-      ctx.strokeStyle=c.energyCol;ctx.lineWidth=4-i;
-      ctx.beginPath();ctx.moveTo(ox-dir*8,fy-4);ctx.lineTo(ox+dir*8,fy+4);ctx.stroke();
-    }
-
-  } else {
-    /* ── KICK FX ── */
-    /* kick arc swings forward in dir direction */
-    const kx=p.x;
-    const ky=py-30;
-    const baseAng=dir>0?0:Math.PI; /* start angle depends on facing */
-
-    /* sweep arc */
-    for(let i=0;i<6;i++){
-      const progress=at+i*.04;
-      const startA=baseAng + (dir>0?-1.2:-1.2+Math.PI);
-      const endA  =baseAng + (dir>0?0.2:0.2+Math.PI);
-      const r=50+i*6;
-      const alpha=(.8-i*.12)*at;
-      ctx.globalAlpha=alpha;
+  if (p.attackType === 'kick') {
+    const cx = px + facing * 62;
+    const cy = py - 58;
+    ctx.globalAlpha = 0.35 + strike * 0.55;
+    for (let i = 0; i < 4; i++) {
       ctx.beginPath();
-      if(dir>0) ctx.arc(kx,ky,r,startA+progress*.3,endA+progress*.1);
-      else       ctx.arc(kx,ky,r,Math.PI-endA-progress*.1,Math.PI-startA-progress*.3,true);
-      ctx.strokeStyle=i%2?c.energyCol:c.energyCol2;ctx.lineWidth=3-i*.3;ctx.stroke();
+      const radius = 34 + i * 10;
+      const start = facing > 0 ? -1.15 : Math.PI + 0.15;
+      const end = facing > 0 ? 0.3 : Math.PI + 1.45;
+      ctx.arc(cx - facing * 14, cy, radius, start, end);
+      ctx.strokeStyle = i % 2 === 0 ? pal.aura : pal.aura2;
+      ctx.lineWidth = 3.6 - i * 0.55;
+      ctx.stroke();
+    }
+  } else {
+    const cx = px + facing * 78;
+    const cy = py - 74;
+    ctx.globalAlpha = 0.38 + strike * 0.52;
+    for (let i = 0; i < 5; i++) {
+      ctx.beginPath();
+      const len = 22 + i * 10;
+      ctx.moveTo(cx - facing * (8 + i * 8), cy + i * 2);
+      ctx.lineTo(cx + facing * len, cy - i * 3);
+      ctx.strokeStyle = i % 2 === 0 ? pal.aura : pal.aura2;
+      ctx.lineWidth = 4 - i * 0.55;
+      ctx.stroke();
     }
 
-    /* shin impact point */
-    const kfx=p.x + dir*55;
-    const kfy=py-50;
-    ctx.globalAlpha=at*.8;
-    const kf=ctx.createRadialGradient(kfx,kfy,0,kfx,kfy,18);
-    kf.addColorStop(0,'rgba(255,255,200,.85)');
-    kf.addColorStop(.4,c.energyCol+'99');
-    kf.addColorStop(1,'transparent');
-    ctx.fillStyle=kf;ctx.beginPath();ctx.arc(kfx,kfy,18,0,Math.PI*2);ctx.fill();
-
-    /* sparks */
-    ctx.fillStyle=c.energyCol;
-    for(let s=0;s<6;s++){
-      const sa=(s/6)*Math.PI-(dir>0?0.3:2.8);
-      const sr=22+s*4;
-      ctx.beginPath();ctx.arc(kfx+Math.cos(sa)*sr,kfy+Math.sin(sa)*sr,2,0,Math.PI*2);ctx.fill();
-    }
+    const ring = ctx.createRadialGradient(cx, cy, 0, cx, cy, 28);
+    ring.addColorStop(0, 'rgba(255,255,255,.95)');
+    ring.addColorStop(0.45, pal.aura);
+    ring.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = ring;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 28, 0, TAU);
+    ctx.fill();
   }
   ctx.restore();
 }
 
-/* ── HIT RECEIVED FX ── (on the player who got hit) */
-function drawHitFX(p){
-  const groundH=Math.max(0,GY-p.y);
-  const x=p.x;
-  const y=(GY-groundH)-70;
-  const prog=p.hitTimer/15; /* 1→0 as it fades */
-  const t=T();
+function drawHitFX(p, idx) {
+  const pal = palettes[idx];
+  const x = p.x + (p.facing ?? 1) * 10;
+  const y = p.y - 86;
+  const progress = clamp((p.hitTimer ?? 0) / 15, 0, 1);
 
   ctx.save();
-  ctx.globalAlpha=prog;
+  ctx.globalAlpha = progress;
 
-  /* big impact star burst */
-  const n=10;
-  for(let i=0;i<n;i++){
-    const ang=(i/n)*Math.PI*2;
-    const inner=8+i%2*6;
-    const outer=(15-p.hitTimer)*5+10;
-    ctx.beginPath();ctx.moveTo(x,y);
-    ctx.lineTo(x+Math.cos(ang)*outer,y+Math.sin(ang)*outer);
-    ctx.strokeStyle=i%3===0?'#ffffff':i%3===1?'#ffdd00':'#ff6600';
-    ctx.lineWidth=2.5;ctx.stroke();
-    /* star tip */
-    ctx.fillStyle='#ffff88';
-    ctx.beginPath();ctx.arc(x+Math.cos(ang)*outer,y+Math.sin(ang)*outer,2,0,Math.PI*2);ctx.fill();
+  const burst = ctx.createRadialGradient(x, y, 0, x, y, 36);
+  burst.addColorStop(0, 'rgba(255,255,255,.96)');
+  burst.addColorStop(0.35, '#ffd54c');
+  burst.addColorStop(0.7, pal.aura);
+  burst.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = burst;
+  ctx.beginPath();
+  ctx.arc(x, y, 36, 0, TAU);
+  ctx.fill();
+
+  ctx.strokeStyle = '#fff9b1';
+  ctx.lineWidth = 2.5;
+  for (let i = 0; i < 10; i++) {
+    const ang = (i / 10) * TAU;
+    const r = 18 + i * 1.6;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + Math.cos(ang) * r, y + Math.sin(ang) * r);
+    ctx.stroke();
   }
 
-  /* center flash */
-  const cf=ctx.createRadialGradient(x,y,0,x,y,20);
-  cf.addColorStop(0,'rgba(255,255,200,.9)');
-  cf.addColorStop(.5,'rgba(255,160,0,.4)');
-  cf.addColorStop(1,'transparent');
-  ctx.fillStyle=cf;ctx.beginPath();ctx.arc(x,y,20,0,Math.PI*2);ctx.fill();
-
-  /* flying sparks */
-  ctx.fillStyle='#ffcc00';
-  for(let i=0;i<8;i++){
-    const ang=(i/8)*Math.PI*2+(t*.005);
-    const r=(15-p.hitTimer)*4;
-    ctx.beginPath();ctx.arc(x+Math.cos(ang)*r,y+Math.sin(ang)*r,2.5,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle = '#ffd249';
+  for (let i = 0; i < 7; i++) {
+    const ang = (i / 7) * TAU + performance.now() * 0.01;
+    ctx.beginPath();
+    ctx.arc(x + Math.cos(ang) * 28, y + Math.sin(ang) * 20, 2.4, 0, TAU);
+    ctx.fill();
   }
 
-  /* "impact" text-like shape */
-  if(p.hitTimer>12){
-    ctx.save();ctx.translate(x+20,y-20);ctx.rotate(-.3);
-    ctx.strokeStyle='#ffff00';ctx.lineWidth=2;
-    ctx.strokeRect(-12,-8,24,16);
-    ctx.strokeRect(-10,-6,20,12);
-    ctx.restore();
-  }
+  ctx.restore();
+}
 
+function drawAirTrail(p, idx) {
+  const pal = palettes[idx];
+  const x = p.x - (p.facing ?? 1) * 18;
+  const y = p.y - 20;
+  ctx.save();
+  ctx.globalAlpha = 0.18;
+  for (let i = 0; i < 3; i++) {
+    ctx.fillStyle = i === 0 ? pal.aura : pal.aura2;
+    ctx.beginPath();
+    ctx.ellipse(x - i * (p.facing ?? 1) * 18, y + i * 4, 20 - i * 4, 8 - i * 1.5, -0.2, 0, TAU);
+    ctx.fill();
+  }
   ctx.restore();
 }
 </script>
+
 </body>
 </html>
