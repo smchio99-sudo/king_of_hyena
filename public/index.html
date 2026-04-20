@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>KING OF HYENA</title>
 <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 <style>
@@ -88,7 +91,16 @@ canvas{display:block;width:100%;height:100%;}
 .actButtons .kick{background:radial-gradient(circle at 30% 25%,rgba(255,255,255,.24),rgba(255,96,160,.28) 45%,rgba(100,0,45,.72));}
 .actButtons .punch{background:radial-gradient(circle at 30% 25%,rgba(255,255,255,.24),rgba(86,176,255,.3) 45%,rgba(10,35,110,.76));}
 .ctrlHint{position:fixed;left:12px;right:12px;bottom:calc(var(--control-pad) - 8px + env(safe-area-inset-bottom,0px));display:flex;justify-content:center;pointer-events:none;z-index:129;}
-.ctrlHint span{padding:5px 12px;border-radius:999px;background:rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.08);font-family:'Noto Sans KR',sans-serif;font-size:11px;letter-spacing:.5px;color:#c2c6d6;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);}
+.ctrlHint span{padding:5px 12px;border-radius:999px;background:rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.08);font-family:'Noto Sans KR',sans-serif;font-size:11px;letter-spacing:.5px;color:#c2c6d6;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);} 
+#fsBtn{position:fixed;top:calc(10px + env(safe-area-inset-top,0px));right:12px;z-index:150;padding:10px 14px;border-radius:999px;border:1px solid rgba(255,255,255,.12);background:rgba(8,10,18,.58);color:#f3f4ff;font-family:'Bebas Neue',sans-serif;font-size:16px;letter-spacing:1.5px;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 10px 24px rgba(0,0,0,.22);}
+#fsBtn:active{transform:scale(.97);}
+@media (hover:hover) and (pointer:fine){
+  body{padding:8px;}
+  #mobileControls,.ctrlHint,#fsBtn{display:none!important;}
+}
+@media (hover:none) and (pointer:coarse){
+  #fsBtn{display:block;}
+}
 @media (max-width:900px){
   :root{--control-pad:164px;}
   .lb-title{font-size:68px;}
@@ -125,6 +137,7 @@ canvas{display:block;width:100%;height:100%;}
 </head>
 <body>
 <div id="appWrap">
+<button id="fsBtn" type="button" aria-label="전체화면">FULLSCREEN</button>
 <div id="screen">
   <div class="scanline"></div>
   <div class="vignette"></div>
@@ -205,14 +218,18 @@ const TAU = Math.PI * 2;
 const keys = {};
 const virtualKeys = { left: false, right: false, jump: false, punch: false, kick: false };
 const trackedKeys = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'q', 'Q', 'a', 'A', ' ']);
+const tapPulseTimers = new Map();
+const TAP_PULSE_MS = { jump: 120, punch: 120, kick: 120, left: 70, right: 70 };
 
 document.addEventListener('keydown', e => {
   if (trackedKeys.has(e.key)) e.preventDefault();
   keys[e.key] = true;
+  if (trackedKeys.has(e.key)) sendInputSnapshot();
 });
 document.addEventListener('keyup', e => {
   if (trackedKeys.has(e.key)) e.preventDefault();
   keys[e.key] = false;
+  if (trackedKeys.has(e.key)) sendInputSnapshot();
 });
 
 document.addEventListener('visibilitychange', () => {
@@ -232,6 +249,30 @@ function getInput() {
   };
 }
 
+function sendInputSnapshot() {
+  if (roomId && gameStarted) socket.emit('playerInput', { roomId, input: getInput() });
+}
+
+function clearPulseTimer(name) {
+  const timer = tapPulseTimers.get(name);
+  if (timer) {
+    clearTimeout(timer);
+    tapPulseTimers.delete(name);
+  }
+}
+
+function pulseVirtualInput(name, duration = TAP_PULSE_MS[name] || 90) {
+  clearPulseTimer(name);
+  setVirtualInput(name, true);
+  sendInputSnapshot();
+  const timer = setTimeout(() => {
+    setVirtualInput(name, false);
+    sendInputSnapshot();
+    tapPulseTimers.delete(name);
+  }, duration);
+  tapPulseTimers.set(name, timer);
+}
+
 const virtualPointerMap = new Map();
 
 function setVirtualInput(name, pressed, pointerId = null) {
@@ -239,39 +280,81 @@ function setVirtualInput(name, pressed, pointerId = null) {
   virtualKeys[name] = pressed;
   const btn = document.querySelector(`[data-input="${name}"]`);
   if (btn) btn.classList.toggle('active', pressed);
+  if (pressed) clearPulseTimer(name);
   if (!pressed && pointerId !== null) virtualPointerMap.delete(pointerId);
 }
 
+function pressVirtualInput(name, pointerId = null) {
+  setVirtualInput(name, true, pointerId);
+  sendInputSnapshot();
+}
+
+function releaseVirtualInput(name, pointerId = null) {
+  setVirtualInput(name, false, pointerId);
+  sendInputSnapshot();
+}
+
+function isActionInput(name) {
+  return name === 'jump' || name === 'punch' || name === 'kick';
+}
+
 function bindVirtualControls() {
+  const supportsPointer = 'PointerEvent' in window;
+
   document.querySelectorAll('[data-input]').forEach(btn => {
     const name = btn.dataset.input;
 
-    btn.addEventListener('pointerdown', e => {
-      e.preventDefault();
-      if (btn.setPointerCapture) btn.setPointerCapture(e.pointerId);
-      virtualPointerMap.set(e.pointerId, name);
-      setVirtualInput(name, true, e.pointerId);
-    }, { passive: false });
-
-    const release = e => {
+    const onPress = e => {
       if (e) e.preventDefault();
-      const mapped = virtualPointerMap.get(e.pointerId) || name;
-      setVirtualInput(mapped, false, e.pointerId);
+      requestGameFullscreen();
+      if (isActionInput(name)) {
+        if (supportsPointer && e && btn.setPointerCapture && e.pointerId != null) btn.setPointerCapture(e.pointerId);
+        if (supportsPointer && e && e.pointerId != null) virtualPointerMap.set(e.pointerId, name);
+        pulseVirtualInput(name);
+        return;
+      }
+      if (supportsPointer && e && btn.setPointerCapture && e.pointerId != null) btn.setPointerCapture(e.pointerId);
+      if (supportsPointer && e && e.pointerId != null) virtualPointerMap.set(e.pointerId, name);
+      pressVirtualInput(name, supportsPointer ? (e?.pointerId ?? null) : null);
     };
 
-    btn.addEventListener('pointerup', release, { passive: false });
-    btn.addEventListener('pointercancel', release, { passive: false });
-    btn.addEventListener('lostpointercapture', release, { passive: false });
+    const onRelease = e => {
+      if (e) e.preventDefault();
+      if (isActionInput(name)) return;
+      const mapped = supportsPointer && e && e.pointerId != null ? (virtualPointerMap.get(e.pointerId) || name) : name;
+      releaseVirtualInput(mapped, supportsPointer ? (e?.pointerId ?? null) : null);
+    };
+
+    if (supportsPointer) {
+      btn.addEventListener('pointerdown', onPress, { passive: false });
+      btn.addEventListener('pointerup', onRelease, { passive: false });
+      btn.addEventListener('pointercancel', onRelease, { passive: false });
+      btn.addEventListener('lostpointercapture', onRelease, { passive: false });
+    } else {
+      btn.addEventListener('touchstart', onPress, { passive: false });
+      btn.addEventListener('touchend', onRelease, { passive: false });
+      btn.addEventListener('touchcancel', onRelease, { passive: false });
+      btn.addEventListener('click', e => {
+        e.preventDefault();
+        requestGameFullscreen();
+        if (isActionInput(name)) pulseVirtualInput(name, TAP_PULSE_MS[name] || 120);
+        else pulseVirtualInput(name, TAP_PULSE_MS[name] || 70);
+      });
+    }
+
     btn.addEventListener('contextmenu', e => e.preventDefault());
   });
 
   window.addEventListener('blur', () => {
-    Object.keys(virtualKeys).forEach(name => setVirtualInput(name, false));
+    Object.keys(virtualKeys).forEach(name => {
+      clearPulseTimer(name);
+      setVirtualInput(name, false);
+    });
   });
 }
 
-
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
 function lerp(a, b, t) { return a + (b - a) * t; }
 function easeOutQuad(t) { return 1 - (1 - t) * (1 - t); }
 
@@ -294,12 +377,63 @@ const palettes = [
   }
 ];
 
+function createComboTracker() {
+  return {
+    attackActive: false,
+    lastAttackStart: 0,
+    chain: 0,
+    variant: 0,
+    flash: 0,
+    label: ''
+  };
+}
+
+const comboMoveNames = {
+  punch: ['JAB', 'STRAIGHT', 'UPPERCUT'],
+  kick: ['LOW KICK', 'MIDDLE KICK', 'ROUNDHOUSE']
+};
+
 const renderFx = {
   fighters: [null, null],
   localJump: { height: 0, velocity: 0, held: false },
   cameraShake: 0,
-  impactFlash: 0
+  impactFlash: 0,
+  roleRevealEnd: 0,
+  roleRevealText: '',
+  combos: [createComboTracker(), createComboTracker()]
 };
+
+const isCoarsePointerDevice = window.matchMedia('(pointer: coarse)').matches || window.matchMedia('(hover: none)').matches || navigator.maxTouchPoints > 0;
+const fsBtn = document.getElementById('fsBtn');
+if (fsBtn) {
+  fsBtn.hidden = !isCoarsePointerDevice;
+  fsBtn.addEventListener('click', () => requestGameFullscreen(true));
+}
+
+async function requestGameFullscreen(force = false) {
+  if (!isCoarsePointerDevice && !force) return false;
+  const doc = document;
+  const root = document.documentElement;
+  if (doc.fullscreenElement || doc.webkitFullscreenElement) return true;
+  try {
+    if (root.requestFullscreen) await root.requestFullscreen({ navigationUI: 'hide' });
+    else if (root.webkitRequestFullscreen) root.webkitRequestFullscreen();
+    if (screen.orientation && screen.orientation.lock) {
+      try { await screen.orientation.lock('landscape'); } catch (e) {}
+    }
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+['pointerdown','touchstart'].forEach(type => {
+  window.addEventListener(type, () => requestGameFullscreen(), { passive: true, once: true });
+});
+
+window.addEventListener('orientationchange', () => {
+  if (isCoarsePointerDevice) setTimeout(() => requestGameFullscreen(), 120);
+});
 
 bindVirtualControls();
 
@@ -312,7 +446,11 @@ function makeRenderFighter(serverFighter, i) {
     state: serverFighter?.state ?? 'idle',
     attackTimer: serverFighter?.attackTimer ?? 0,
     attackType: serverFighter?.attackType ?? null,
-    hitTimer: serverFighter?.hitTimer ?? 0
+    hitTimer: serverFighter?.hitTimer ?? 0,
+    comboVariant: 0,
+    comboChain: 0,
+    comboFlash: 0,
+    comboLabel: ''
   };
 }
 
@@ -334,9 +472,35 @@ function resolveState(serverFighter, displayY) {
   return 'idle';
 }
 
+function refreshComboState(serverFighter, i) {
+  if (!renderFx.combos[i]) renderFx.combos[i] = createComboTracker();
+  const tracker = renderFx.combos[i];
+  const now = performance.now();
+  const active = (serverFighter?.attackTimer ?? 0) > 0;
+  const attackType = serverFighter?.attackType === 'kick' ? 'kick' : 'punch';
+
+  if (active && !tracker.attackActive) {
+    tracker.chain = (now - tracker.lastAttackStart <= 700) ? Math.min(tracker.chain + 1, 3) : 1;
+    tracker.variant = (tracker.chain - 1) % 3;
+    tracker.label = tracker.chain > 1
+      ? `${comboMoveNames[attackType][tracker.variant]} · COMBO x${tracker.chain}`
+      : comboMoveNames[attackType][tracker.variant];
+    tracker.flash = 1;
+    tracker.lastAttackStart = now;
+  } else {
+    if (!active && now - tracker.lastAttackStart > 850) {
+      tracker.chain = 0;
+    }
+    tracker.flash *= active ? 0.95 : 0.88;
+  }
+
+  tracker.attackActive = active;
+  if (tracker.flash < 0.03) tracker.flash = 0;
+}
+
 function updateLocalJumpPredictor() {
   const jump = renderFx.localJump;
-  const wantsJump = !!keys['ArrowUp'];
+  const wantsJump = !!keys['ArrowUp'] || virtualKeys.jump;
   const serverPlayer = gameState?.players?.[playerIndex];
   const serverY = typeof serverPlayer?.y === 'number' ? serverPlayer.y : GY;
   const serverHeight = Math.max(0, GY - serverY);
@@ -374,6 +538,8 @@ function stepVisualState() {
       renderFx.fighters[i] = makeRenderFighter(serverFighter, i);
     }
 
+    refreshComboState(serverFighter, i);
+
     const rf = renderFx.fighters[i];
     const serverX = typeof serverFighter.x === 'number' ? serverFighter.x : rf.x;
     const serverY = typeof serverFighter.y === 'number' ? serverFighter.y : GY;
@@ -387,6 +553,10 @@ function stepVisualState() {
     rf.attackTimer = serverFighter.attackTimer ?? 0;
     rf.attackType = serverFighter.attackType ?? null;
     rf.hitTimer = serverFighter.hitTimer ?? 0;
+    rf.comboVariant = renderFx.combos[i]?.variant ?? 0;
+    rf.comboChain = renderFx.combos[i]?.chain ?? 0;
+    rf.comboFlash = renderFx.combos[i]?.flash ?? 0;
+    rf.comboLabel = renderFx.combos[i]?.label ?? '';
 
     if ((serverFighter.hitTimer ?? 0) > 8) {
       renderFx.cameraShake = Math.max(renderFx.cameraShake, 8);
@@ -422,6 +592,7 @@ function buildRenderState() {
 }
 
 function findMatch() {
+  requestGameFullscreen(true);
   document.getElementById('matchBtn').disabled = true;
   const s = document.getElementById('statusMsg');
   s.textContent = '상대방을 찾는 중...';
@@ -438,6 +609,9 @@ socket.on('waiting', () => {
 socket.on('matchFound', ({ roomId: rid, playerIndex: idx }) => {
   roomId = rid;
   playerIndex = idx;
+  renderFx.roleRevealText = idx === 0 ? 'YOU · LEFT SIDE' : 'YOU · RIGHT SIDE';
+  renderFx.roleRevealEnd = performance.now() + 5200;
+  renderFx.combos = [createComboTracker(), createComboTracker()];
   document.getElementById('lobby').style.display = 'none';
   document.getElementById('gameArea').style.display = 'block';
   startCountdown();
@@ -473,6 +647,7 @@ function startCountdown() {
     if (i >= steps.length) {
       el.style.display = 'none';
       gameStarted = true;
+      renderFx.roleRevealEnd = Math.max(renderFx.roleRevealEnd, performance.now() + 2800);
       startInputLoop();
       return;
     }
@@ -564,7 +739,12 @@ function draw(s) {
     if ((p.attackTimer ?? 0) > 0) drawAttackFX(p, i);
     if ((p.hitTimer ?? 0) > 0) drawHitFX(p, i);
     if (p.state === 'jump') drawAirTrail(p, i);
+    if ((p.comboFlash ?? 0) > 0.04) drawComboLabel(p, i);
   });
+
+  if (playerIndex !== -1 && s.players[playerIndex] && performance.now() < renderFx.roleRevealEnd) {
+    drawRoleMarker(s.players[playerIndex]);
+  }
 
   if (renderFx.impactFlash > 0.02) {
     ctx.fillStyle = `rgba(255,255,255,${renderFx.impactFlash * 0.12})`;
@@ -759,6 +939,8 @@ function drawPlayer(p, idx, s) {
   const hitFlash = (p.hitTimer ?? 0) > 0;
   const jumpLean = p.state === 'jump' ? -0.08 : 0;
   const scaleY = p.state === 'jump' ? 0.98 : 1;
+  const comboVariant = p.comboVariant ?? 0;
+  const comboPower = clamp((p.comboChain ?? 1) / 3, 0.34, 1);
 
   ctx.save();
   ctx.translate(p.x, p.y + idleBob);
@@ -792,24 +974,50 @@ function drawPlayer(p, idx, s) {
     ctx.fill();
   }
 
-  const rearLeg = p.state === 'jump' ? -0.8 : (p.state === 'walk' ? walkPhase * 0.45 : 0.15);
-  const frontLeg = p.state === 'jump' ? 0.95 : (p.state === 'walk' ? -walkPhase * 0.45 : -0.14);
-  const rearArm = p.state === 'jump' ? -0.85 : (p.state === 'walk' ? -walkPhase * 0.28 : -0.18);
+  let rearLeg = p.state === 'jump' ? -0.8 : (p.state === 'walk' ? walkPhase * 0.45 : 0.15);
+  let frontLeg = p.state === 'jump' ? 0.95 : (p.state === 'walk' ? -walkPhase * 0.45 : -0.14);
+  let rearArm = p.state === 'jump' ? -0.85 : (p.state === 'walk' ? -walkPhase * 0.28 : -0.18);
   let frontArm = p.state === 'jump' ? 0.65 : (p.state === 'walk' ? walkPhase * 0.28 : 0.3);
   let frontKick = 0;
+  let torsoLean = jumpLean;
 
   if (p.state === 'punch') {
-    frontArm = -0.35 + strike * 1.65;
+    if (comboVariant === 0) {
+      frontArm = -0.35 + strike * 1.65;
+      torsoLean = -0.05;
+    } else if (comboVariant === 1) {
+      frontArm = -0.55 + strike * 1.9;
+      rearArm = -0.28;
+      torsoLean = -0.12;
+    } else {
+      frontArm = 0.82 - strike * 1.45;
+      rearLeg = 0.06;
+      frontLeg = -0.22;
+      torsoLean = -0.2;
+    }
   }
   if (p.state === 'kick') {
-    frontArm = 0.95 - strike * 0.55;
-    frontKick = -0.35 + strike * 1.55;
+    if (comboVariant === 0) {
+      frontArm = 0.86 - strike * 0.42;
+      frontKick = -0.06 + strike * 0.92;
+      torsoLean = -0.02;
+    } else if (comboVariant === 1) {
+      frontArm = 0.95 - strike * 0.55;
+      frontKick = -0.35 + strike * 1.55;
+      torsoLean = -0.06;
+    } else {
+      frontArm = 1.1 - strike * 0.98;
+      rearArm = -0.5;
+      frontKick = -0.82 + strike * 2.15;
+      rearLeg = 0.3;
+      torsoLean = -0.18;
+    }
   }
 
   drawLeg(-12, -6, rearLeg, pal, p.state === 'jump', false);
   drawLeg(8, -6, frontKick || frontLeg, pal, p.state === 'jump', true);
 
-  drawTorso(pal, jumpLean, hitFlash);
+  drawTorso(pal, torsoLean, hitFlash);
 
   drawArm(-23, -82, rearArm, pal, false, p.state === 'jump');
   drawArm(16, -82, frontArm, pal, true, p.state === 'jump', p.state === 'punch');
@@ -817,10 +1025,10 @@ function drawPlayer(p, idx, s) {
   drawHead(pal, p.state, hitFlash, idx);
 
   if (p.state === 'kick') {
-    drawKickFlare(28, -44, strike, pal);
+    drawKickFlare(28, -44, strike, pal, comboVariant, comboPower);
   }
   if (p.state === 'punch') {
-    drawPunchFlare(42, -70, strike, pal);
+    drawPunchFlare(42, -70, strike, pal, comboVariant, comboPower);
   }
 
   if (hitFlash) {
@@ -1039,48 +1247,51 @@ function drawHead(pal, state, hitFlash, idx) {
   ctx.restore();
 }
 
-function drawPunchFlare(x, y, strike, pal) {
+function drawPunchFlare(x, y, strike, pal, variant = 0, power = 0.4) {
   if (strike <= 0.04) return;
+  const radius = 22 + power * 14 + variant * 3;
   ctx.save();
-  ctx.translate(x + strike * 26, y - strike * 6);
-  ctx.globalAlpha = strike;
-  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 26);
+  ctx.translate(x + strike * (24 + variant * 4), y - strike * (6 + variant * 4));
+  ctx.globalAlpha = strike * (0.82 + power * 0.35);
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, radius);
   g.addColorStop(0, 'rgba(255,255,255,.95)');
   g.addColorStop(0.35, pal.aura);
   g.addColorStop(1, 'rgba(255,255,255,0)');
   ctx.fillStyle = g;
   ctx.beginPath();
-  ctx.arc(0, 0, 26, 0, TAU);
+  ctx.arc(0, 0, radius, 0, TAU);
   ctx.fill();
 
-  glowStroke(pal.aura, 2.4, () => {
+  glowStroke(pal.aura, 2.2 + power, () => {
     ctx.beginPath();
-    for (let i = 0; i < 4; i++) {
-      ctx.moveTo(-18 + i * 6, -8 + i);
-      ctx.lineTo(14 + i * 7, -15 + i * 4);
+    const lines = 4 + variant;
+    for (let i = 0; i < lines; i++) {
+      ctx.moveTo(-18 + i * 6, -8 + i * 2);
+      ctx.lineTo(14 + i * 8, -15 + i * 5);
     }
     ctx.stroke();
   });
   ctx.restore();
 }
 
-function drawKickFlare(x, y, strike, pal) {
+function drawKickFlare(x, y, strike, pal, variant = 0, power = 0.4) {
   if (strike <= 0.04) return;
+  const arcRadius = 34 + strike * 8 + variant * 8 + power * 10;
   ctx.save();
-  ctx.translate(x + strike * 24, y - strike * 8);
-  ctx.globalAlpha = strike;
-  glowStroke(pal.aura, 3.1, () => {
+  ctx.translate(x + strike * (24 + variant * 5), y - strike * (8 + variant * 2));
+  ctx.globalAlpha = strike * (0.78 + power * 0.3);
+  glowStroke(pal.aura, 3 + power, () => {
     ctx.beginPath();
-    ctx.arc(0, 0, 36 + strike * 8, -1.1, 0.38);
+    ctx.arc(0, 0, arcRadius, -1.2 - variant * 0.16, 0.36 + variant * 0.1);
     ctx.stroke();
   });
-  const spark = ctx.createRadialGradient(0, 0, 0, 0, 0, 18);
+  const spark = ctx.createRadialGradient(0, 0, 0, 0, 0, 18 + power * 8);
   spark.addColorStop(0, 'rgba(255,255,255,.9)');
   spark.addColorStop(0.45, pal.aura);
   spark.addColorStop(1, 'rgba(255,255,255,0)');
   ctx.fillStyle = spark;
   ctx.beginPath();
-  ctx.arc(0, 0, 18, 0, TAU);
+  ctx.arc(0, 0, 18 + power * 8, 0, TAU);
   ctx.fill();
   ctx.restore();
 }
@@ -1092,45 +1303,108 @@ function drawAttackFX(p, idx) {
   const strike = Math.sin(progress * Math.PI);
   const px = p.x;
   const py = p.y;
+  const variant = p.comboVariant ?? 0;
+  const comboPower = clamp((p.comboChain ?? 1) / 3, 0.34, 1);
 
   ctx.save();
   if (p.attackType === 'kick') {
-    const cx = px + facing * 62;
-    const cy = py - 58;
-    ctx.globalAlpha = 0.35 + strike * 0.55;
-    for (let i = 0; i < 4; i++) {
+    const cx = px + facing * (58 + variant * 8);
+    const cy = py - (60 + variant * 5);
+    ctx.globalAlpha = 0.35 + strike * (0.45 + comboPower * 0.25);
+    const rings = 4 + variant;
+    for (let i = 0; i < rings; i++) {
       ctx.beginPath();
-      const radius = 34 + i * 10;
-      const start = facing > 0 ? -1.15 : Math.PI + 0.15;
-      const end = facing > 0 ? 0.3 : Math.PI + 1.45;
+      const radius = 34 + i * 10 + variant * 4;
+      const start = facing > 0 ? -1.2 - variant * 0.12 : Math.PI + 0.12 - variant * 0.08;
+      const end = facing > 0 ? 0.3 + variant * 0.14 : Math.PI + 1.44 + variant * 0.14;
       ctx.arc(cx - facing * 14, cy, radius, start, end);
       ctx.strokeStyle = i % 2 === 0 ? pal.aura : pal.aura2;
-      ctx.lineWidth = 3.6 - i * 0.55;
+      ctx.lineWidth = 3.6 - i * 0.45 + comboPower * 0.3;
       ctx.stroke();
     }
   } else {
-    const cx = px + facing * 78;
-    const cy = py - 74;
-    ctx.globalAlpha = 0.38 + strike * 0.52;
-    for (let i = 0; i < 5; i++) {
+    const cx = px + facing * (76 + variant * 10);
+    const cy = py - (74 + variant * 3);
+    ctx.globalAlpha = 0.38 + strike * (0.45 + comboPower * 0.24);
+    const trails = 5 + variant;
+    for (let i = 0; i < trails; i++) {
       ctx.beginPath();
-      const len = 22 + i * 10;
-      ctx.moveTo(cx - facing * (8 + i * 8), cy + i * 2);
-      ctx.lineTo(cx + facing * len, cy - i * 3);
+      const len = 22 + i * 10 + comboPower * 8;
+      ctx.moveTo(cx - facing * (8 + i * 8), cy + i * 2 - variant * 2);
+      ctx.lineTo(cx + facing * len, cy - i * (3 + variant));
       ctx.strokeStyle = i % 2 === 0 ? pal.aura : pal.aura2;
-      ctx.lineWidth = 4 - i * 0.55;
+      ctx.lineWidth = 4 - i * 0.45 + comboPower * 0.3;
       ctx.stroke();
     }
 
-    const ring = ctx.createRadialGradient(cx, cy, 0, cx, cy, 28);
+    const ring = ctx.createRadialGradient(cx, cy, 0, cx, cy, 28 + comboPower * 10);
     ring.addColorStop(0, 'rgba(255,255,255,.95)');
     ring.addColorStop(0.45, pal.aura);
     ring.addColorStop(1, 'rgba(255,255,255,0)');
     ctx.fillStyle = ring;
     ctx.beginPath();
-    ctx.arc(cx, cy, 28, 0, TAU);
+    ctx.arc(cx, cy, 28 + comboPower * 10, 0, TAU);
     ctx.fill();
   }
+  ctx.restore();
+}
+
+function drawRoleMarker(p) {
+  const remain = clamp((renderFx.roleRevealEnd - performance.now()) / 2800, 0, 1);
+  if (remain <= 0) return;
+
+  const x = p.x;
+  const y = p.y - 170;
+  const w = 152;
+  const h = 34;
+
+  ctx.save();
+  ctx.globalAlpha = Math.min(1, remain * 1.1);
+  const floatY = Math.sin(performance.now() * 0.01) * 4;
+  ctx.translate(0, floatY);
+
+  const g = ctx.createLinearGradient(x - w / 2, y, x + w / 2, y + h);
+  g.addColorStop(0, 'rgba(32,120,255,.92)');
+  g.addColorStop(1, 'rgba(255,72,32,.92)');
+  capsule(x - w / 2, y, w, h, g, 'rgba(255,255,255,.8)', 18);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '900 16px "Bebas Neue", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(renderFx.roleRevealText || 'YOU', x, y + 18);
+
+  ctx.beginPath();
+  ctx.moveTo(x, y + h + 14);
+  ctx.lineTo(x - 11, y + h - 2);
+  ctx.lineTo(x + 11, y + h - 2);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(255,255,255,.92)';
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawComboLabel(p, idx) {
+  const flash = clamp(p.comboFlash ?? 0, 0, 1);
+  if (flash <= 0) return;
+  const x = p.x;
+  const y = p.y - 140;
+  const pal = palettes[idx];
+  const text = p.comboLabel || (p.comboChain > 1 ? `COMBO x${p.comboChain}` : 'ATTACK');
+  const width = Math.max(120, Math.min(220, 22 + text.length * 9));
+
+  ctx.save();
+  ctx.globalAlpha = flash;
+  ctx.translate(0, -12 * (1 - flash));
+  const fill = ctx.createLinearGradient(x - width / 2, y, x + width / 2, y + 28);
+  fill.addColorStop(0, 'rgba(10,10,16,.9)');
+  fill.addColorStop(1, 'rgba(35,35,48,.88)');
+  capsule(x - width / 2, y, width, 28, fill, pal.aura, 14);
+  ctx.fillStyle = '#fff7da';
+  ctx.font = '900 15px "Bebas Neue", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x, y + 15);
   ctx.restore();
 }
 
